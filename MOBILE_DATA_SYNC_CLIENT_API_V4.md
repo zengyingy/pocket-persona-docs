@@ -1,12 +1,14 @@
 # V4 客户端接口文档
 
-适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-05。
+适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-17。
+
+亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
 | 方法与路径 | 用途 |
 |---|---|
 | POST /auto-media/api/chat/threads/query | 会话列表、预览及本机阅读基准下的未读数 |
 | GET /auto-media/api/chat/roles/{role_id}/sync-state | 可选轻量探测，不是同步读取前置步骤 |
-| POST /auto-media/api/chat/roles/{role_id}/messages:batchCreate | 幂等创建用户消息或端侧回复，接收回复来源，按版本返回完整网红人设 |
+| POST /auto-media/api/chat/roles/{role_id}/messages:batchCreate | 幂等创建用户消息或端侧回复，接收回复来源，按独立版本返回完整网红人设和亲密度 |
 | POST /auto-media/api/chat/roles/{role_id}/messages:batchGet | 按消息 ID 批量查询当前会话的有效消息正文 |
 | POST /auto-media/api/chat/roles/{role_id}/scopes/messages/mutations | 幂等删除一条消息及其关联记忆 |
 | GET /auto-media/api/chat/roles/{role_id}/scopes/messages/mutations/{mutation_id} | 查询消息删除状态及历史回执 |
@@ -24,7 +26,7 @@
 
 | 类型 | JSON表示 | 含义与校验规则 |
 |---|---|---|
-| `ID` | 非空字符串，UTF-8最多128字节 | 业务或资源标识，例如 `"msg_01"`。`user_id`、`role_id`、`message_id`、`object_id`、`asset_id`、`mutation_id`、`task_id` 都使用字符串，不按数字解析，不比较大小。具体生成方在对应字段中说明。 |
+| `ID` | 非空字符串，UTF-8最多128字节 | 业务或资源标识，例如 `"msg_01"`。`user_id`、`role_id`、`message_id`、`object_id`、`asset_id`、`mutation_id`、`task_id`、`moment_id`、`card_id` 都使用字符串，不按数字解析，不比较大小。具体生成方在对应字段中说明。 |
 | `UInt64String` | 十进制数字字符串 | 非负 64 位无符号整数的线格式，例如 `"0"`、`"104"`。用于同步序号、游标、`thread_revision` 及两个快照的数字版本。首期聊天同步的序号和位置上限为 `9223372036854775807`。客户端按整数精确解析和比较。 |
 | `OpaqueString` | 非空字符串，UTF-8最多128字节 | 不透明标识。`sync_epoch`、`messages_sync_epoch`、`receipt_sync_epoch` 等按完整字符串判断相等。 |
 | `TimestampMs` | JSON整数 | Unix纪元起的毫秒时间戳，非负；不是十进制数字字符串。`created_at_ms`、`server_created_at_ms`、`server_time_ms`等均使用此类型；V4读取batch不返回expires_at_ms。 |
@@ -107,16 +109,40 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `message_id` | `ID` | 必填 | 消息的永久业务ID，等于同步外层`object_id`。生成端首次持久化前确定；用户输入与回复使用不同ID。 |
 | `sender_type` | 字符串枚举 | 必填 | `user`或`role`，表示实际业务发言方。不能用它推断消息从上行还是下行获得。 |
 | `sender_id` | `ID` | 必填 | user时必须等于认证用户ID，role时必须等于当前会话`role_id`。由生成端提供、服务端按权限及发送者类型校验。 |
-| `origin` | 字符串枚举 | 必填 | 服务端确认的生成来源。客户端创建入口按sender_type推导，user为`client_user`，role为`client_llm`；服务端模型和多模态任务分别为`server_llm`和`server_multimodal`。 |
-| `reply_to_message_id` | `ID`或`null` | 字段必填，可为null | 明确关联的同会话用户输入ID。新创建的客户端user和role消息均为null；服务端任务有明确输入时填写该输入ID。历史消息已记录的关联继续保留。原输入删除后仍保留这个关联；本地未加载不等于原消息已删除。 |
+| `origin` | 字符串枚举 | 必填 | 服务端确认的生成来源。客户端创建入口按sender_type推导，user为`client_user`，role为`client_llm`；亲密度升级主动消息为`server_llm`。通用模型和多模态任务分别预留`server_llm`和`server_multimodal`，是否启用以完整服务设计为准。 |
+| `reply_to_message_id` | `ID`或`null` | 字段必填，可为null | 明确关联的同会话用户输入ID。新创建的客户端user和role消息、亲密度升级主动消息均为null；服务端任务有明确输入时填写该输入ID。历史消息已记录的关联继续保留。原输入删除后仍保留这个关联；本地未加载不等于原消息已删除。 |
+| `proactive_context` | `ProactiveContextV1`或`null` | 已确认下行必填，可为null；创建请求不传 | 主动消息的正式触发与内容引用信息，字段见2.2.1。普通消息为null。由服务端生成，客户端不能自行指定。 |
 | `message_type` | 字符串枚举 | 必填 | `text`、`image`、`audio`、`video`或`mixed`；必须与body中的正文及附件类型一致。 |
 | `body` | 对象，见2.3 | 必填 | 文本及媒体附件的完整内容容器。至少有非空文本或一个有效附件。 |
-| `created_at_ms` | `TimestampMs` | 必填 | 首次生成消息的时间，用于展示。重试时沿用原值，排序使用 object_seq。 |
+| `created_at_ms` | `TimestampMs` | 必填 | 生成端确定的消息展示时间。亲密度主动消息在正式发布时分配，满足2.2.1的严格递增约束；其他消息为首次生成时确定的时间。重试时沿用原值，排序使用 object_seq。 |
 | `server_created_at_ms` | `TimestampMs` | 已确认下行必填；创建请求不传 | 服务端首次接受消息的时间。幂等重试返回首次值，不用本次回包时间替代。 |
 
-发送者、来源、回复关联、首次时间和稳定消息顺序在创建后不可改。本版messages不提供update；删除只作用于选中消息，已存在的回复保留。
+发送者、来源、回复关联、主动消息触发信息、首次时间和稳定消息顺序在创建后不可改。本版messages不提供update；删除只作用于选中消息，已存在的回复保留。
 
 消息对象的创建位置不属于MessageContent：SyncRecord、创建回执及TaskState均在其外层返回object_seq，避免正文重复元数据。
+
+### 2.2.1 ProactiveContextV1：主动消息触发信息
+
+非null结构的字段全部必填。当前仅启用亲密度等级提升这一触发类型；未来其他触发类型须扩展相应业务契约，不能由客户端任意上传。
+
+| 字段 | 类型 | 含义与校验规则 |
+|---|---|---|
+| `schema_version` | JSON整数，固定`1` | 主动消息元数据结构版本，与消息`sync_seq`、亲密度版本独立。 |
+| `trigger_type` | 字符串枚举 | 当前固定`intimacy_level_up`，表示首次达到某亲密度等级。 |
+| `intimacy_level` | 字符串 | 本条消息对应的触发等级，格式为`LV`加无前导零的正整数，当前必须至少为`LV2`。按数字部分解释等级，不按整个字符串比较大小。 |
+| `moment_id` | `ID` | 生成该等级卡片的任务`task_id`。该字段不是聊天生成任务ID，也不是消息ID。 |
+| `card_id` | `ID` | 上述任务的`published_card_id`，对应实际采用的`current_result.cards[].card_id`。 |
+| `link_type` | 字符串枚举 | 当前固定`intimacy_card`，表示亲密度卡片链接类型。客户端结合`moment_id`、`card_id`识别卡片跳转目标。 |
+
+`trigger_type`表示主动聊天的触发原因，`link_type`表示关联内容的链接类型；未来增加链接类型须先扩展对应业务契约。
+
+亲密度主动消息满足`sender_type="role"`、`sender_id=role_id`、`origin="server_llm"`、`reply_to_message_id=null`、`message_type="text"`，并包含非null的上述结构。消息语言使用生成时冻结的网红`default_language`；生成结合角色人设、卡片文案和最近聊天，不召回长期记忆。
+
+每个用户与网红的组合，每个等级最多发送一次；首次接入已为LV5时只补发LV5，随后从LV5升到LV8时依次补发LV6、LV7、LV8。同一组合先完成低等级消息生成与正式发布，才生成高等级消息；在同一messages Epoch内，低等级已发送消息的`object_seq`严格小于高等级，`created_at_ms`和`server_created_at_ms`也严格递增。不同`(user_id, role_id)`组合可以并行；同一用户与不同网红也属于不同组合。
+
+低等级等待重试期间，高等级继续等待。卡片异常或模型成功返回后内容解析、结构校验失败会消耗重试次数；耗尽后该等级永久跳过，其后等级继续处理。模型请求失败不消耗次数并持续退避重试，不能把成功返回的无效内容归类为请求失败。消息提交到业务数据库即视为已发送，不设置发送有效期；删除消息不会重新触发该等级。`link_type`、`moment_id`、`card_id`和触发等级保留发布时信息，卡片后续撤回或更新不改写旧消息。具体失败分类、次数及恢复规则见服务端完整设计。
+
+本结构是消息正文的一部分，随messages的普通区间、`inline_result.records[]`和`messages:batchGet`一致返回，客户端与整条消息一同保存。删除墓碑仍严格只有`object_id`、`sync_seq`、`operation`，不携带本结构。`latest_message`继续只提供预览字段，不能据其推断触发信息。客户端`messages:batchCreate`不得上传`proactive_context`或服务端`origin`；它们也不属于`metadata.context_provenance`。
 
 ### 2.3 MessageBody与Attachment
 
@@ -172,11 +198,12 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `structured_information` | `StructuredInformationSnapshot` | 按第 5.2 节的版本规则返回 | 当前网红的完整人设快照。省略时保留当前会话中仍有效的快照。 |
 | `structured_information.version` | `UInt64String` | 结构出现时必填 | 按角色维护的正整数版本，首次发布为 `"1"`，完整人设实际变化时递增。`"0"` 保留给客户端表示无快照。版本独立于消息 Epoch、`sync_seq` 和亲密度版本。 |
 | `structured_information.data` | `JSONObject` | 结构出现时必填 | 完整 `persona_features`，保留原始键名、未知字段、嵌套层次、数组顺序和值类型。按版本整体替换，`{}` 是有效空人设。单个完整快照上限为 512 KiB，按未压缩紧凑 UTF-8 JSON 计。 |
-| `intimacy_score` | 对象 | 服务端需返回该结构新完整版本时出现 | 当前会话亲密度的完整快照；与structured_information独立更新。 |
-| `intimacy_score.version` | `UInt64String` | 结构出现时必填 | 亲密度结构自己的整体数字版本，不与structured_information.version横向比较。 |
-| `intimacy_score.score` | `JSONValue` | 结构出现时必填 | 亲密度模块定义的完整业务值，可为数值或模块定义的结构；合法类型及空值含义由业务模块确定，同步层不发明分数字段、量表或内部schema。 |
+| `intimacy_score` | `IntimacyScoreSnapshot` | 本服务已有已接受等级且请求版本不等时返回 | 当前认证用户与该网红的完整亲密度快照；与structured_information独立更新。省略时保留当前会话中仍有效的快照。 |
+| `intimacy_score.version` | `UInt64String` | 结构出现时必填 | 每个用户与网红组合独立维护的正整数版本，首次接受等级时为`"1"`；只在接受更高等级时递增，不与人设版本横向比较，也不随消息Epoch变化。`"0"`表示客户端无快照。 |
+| `intimacy_score.data` | `JSONObject` | 结构出现时必填 | 完整亲密度业务值，当前仅有必填的`level`字段；不使用旧`score`字段。 |
+| `intimacy_score.data.level` | 字符串 | 结构出现时必填 | 本服务最后接受的等级，格式为`LV`加无前导零的正整数，当前至少为`LV2`，例如`"LV2"`、`"LV10"`。不返回null、虚构默认等级或数值分数。 |
 
-两个快照独立处理。人设通过消息创建回包获取，`read-batches` 和 `records:query` 只读取其路径指定的同步 Scope。`persona_features` 由服务端组装，独立提取的语言、展示名和媒体属性有各自的用途。端侧生成时，按固定键顺序遍历快照的顶层字段，逐项拼接为 `key: value`。字符串直接使用，其余值用 JSON 表示。
+两个快照独立处理，均通过消息创建回包获取。`sync-state`不提供亲密度查询参数或快照，`read-batches`、`records:query`及`messages:batchGet`只读取其指定的同步业务对象，不另附当前亲密度快照。没有新消息时不构造假消息或空`messages`批次获取快照。`persona_features`由服务端组装，独立提取的语言、展示名和媒体属性有各自的用途。端侧生成时，按固定键顺序遍历快照的顶层字段，逐项拼接为`key: value`。字符串直接使用，其余值用JSON表示。
 
 亲密度仅应用到当前账号、角色、会话实例和已确认的消息 Epoch，保存在会话内存。会话重进、进程重启或确认消息 Epoch 变化后清空，无快照时请求版本用 `"0"`。
 
@@ -199,7 +226,6 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | 使用位置 | 类型 | 本同步文档负责的约束 |
 |---|---|---|
 | 多模态任务的`options` | `JSONObject` | 由task_type对应业务模块定义的任务参数；作为冻结生成请求的一部分参与幂等一致性判断。不能用改变同一回复ID的options来重新生成。 |
-| `intimacy_score.score` | `JSONValue` | 由亲密度模块定义，完整业务值按其独立Version替换。 |
 | `error.details` | `JSONObject` | 错误码专用的结构化补充信息，按具体接口说明解释。 |
 
 “不透明”只表示同步层不解释其内部业务字段，不表示服务端可以跳过该业务模块的schema、权限与内容校验。
@@ -349,7 +375,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `current_object_seq` | UInt64String | 必填 | 当前会话的消息创建高水位，不包含额外阅读信息。 |
 | `thread_revision` | UInt64String | 必填 | 会话展示状态版本，用于发现列表内容变化。 |
 
-位置字段只用于发现变化。本接口是可选探测，客户端也可以直接调用 read-batches。
+位置字段只用于发现变化。本接口是可选探测，客户端也可以直接调用read-batches。本次亲密度功能不扩展此接口，不接受`intimacy_score_version`查询参数，也不返回`intimacy_score`；亲密度仅按第5节在`messages:batchCreate`回包中交付。
 
 `GET /auto-media/api/chat/roles/role_1/sync-state`，本次请求的 `X-Request-ID` 为 `req_state_1`。无请求正文。
 
@@ -399,9 +425,9 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `sync_positions[].scope` | Scope | 每项必填 | 此位置所属数据类型，同Scope最多一项。 |
 | `sync_positions[].sync_epoch` | OpaqueString或null | 每项必填；无基线为null | 本机该Scope的代次，用于判断提示是否要求重建。 |
 | `sync_positions[].cursor` | UInt64String | 每项必填；无基线为"0" | 本机已完整应用的读取位置，不是本批待上传消息的Seq。 |
-| `session_messages_sync_epoch` | OpaqueString 或 null | 可省略，默认 null | 当前会话已知的 messages Epoch。Epoch 不匹配时服务端将亲密度请求版本按 `"0"` 处理。 |
+| `session_messages_sync_epoch` | OpaqueString 或 null | 可省略，默认 null | 当前会话已知的messages Epoch；不参与人设或亲密度请求版本比较，也不因不匹配将请求版本改为`"0"`。客户端仍按第5.2、5.4节校验响应所属会话与当前Epoch。 |
 | `structured_information_version` | UInt64String | 可省略，默认 `"0"` | 当前会话内存中的网红人设版本。每次发送或重试时取当前值，无快照传 `"0"`。 |
-| `intimacy_score_version` | UInt64String | 可省略，默认 `"0"` | 当前会话内存中的亲密度版本，与人设版本独立。 |
+| `intimacy_score_version` | UInt64String | 可省略，默认 `"0"` | 当前会话内存中的亲密度版本，与人设版本独立。每次发送或重试时从当前会话重新取值，不进入消息幂等摘要或Outbox冻结负载。 |
 
 响应字段：
 
@@ -416,9 +442,11 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `messages_sync_epoch` | OpaqueString | 成功必填 | 当前服务端messages代次，与历史回执代次分开。 |
 | `sync_hints` | SyncHint数组 | 成功必填，可为[] | 按本次请求重新计算的当前变化提示，不回放旧整个HTTP包。 |
 | `structured_information` | StructuredInformationSnapshot | 已发布且版本不等时返回 | 比较请求中的人设版本与该角色当前版本，包括客户端版本过高的情况。字段见第 2.6 节，接收规则见第 5.2 节。 |
-| `intimacy_score` | IntimacyScoreSnapshot | 条件返回 | 按亲密度请求版本和会话 Epoch 独立判断，返回完整业务值。字段见第 2.6 节。 |
+| `intimacy_score` | IntimacyScoreSnapshot | 已有已接受等级且版本不等时返回 | 比较请求亲密度版本与当前用户、网红组合的已接受版本，包括请求版本过高的情况；与消息Epoch无关。字段见2.6，应用与重试规则见5.4。 |
 
 服务端按 `sender_type` 确定 `origin`，user 对应 `client_user`，role 对应 `client_llm`。新建客户端消息的 `reply_to_message_id` 为 null，实际生成依赖由 `context_provenance` 单独表达。`object_seq`、`sync_seq`、`server_created_at_ms` 由服务端在回执中给出。
+
+本接口不接受客户端上传`origin`、`proactive_context`、`link_type`、`moment_id`、`card_id`或触发等级来创建主动消息。`results`只确认本次上传消息，后台生成的主动消息通过messages正式同步读取，不作为本接口额外生成的消息混入`results`。
 
 ### 5.1 端侧回复的生成来源
 
@@ -556,12 +584,74 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
   },
   "intimacy_score": {
     "version": "1",
-    "score": 0
+    "data": {
+      "level": "LV2"
+    }
   }
 }
 ```
 
 后续请求带 `"1"` 且服务端仍为 `"1"` 时，成功回包省略人设。若角色重建后发布空人设版本 `"2"`，请求带 `"1"` 时回传 `{"version":"2","data":{}}`。请求误带 `"9"` 时也回传版本 `"2"`，按第 5.2 节应用纠正。
+
+### 5.4 亲密度快照的回传、应用与重试
+
+亲密度按认证用户和路径网红维护，独立版本只反映本服务已接受的`level`。首次接受LV≥2时版本为`"1"`，以后只接受更高等级；一次监测从LV2直接变为LV5时只递增一次版本。源等级相同、降低或源记录被删除时不改变版本；后两种情况保留本服务最后接受的值并记录error。卡片调整、主动消息补发进度、失败重试及消息Epoch变化都不推进该版本。源库监测周期默认3分钟、可配置，回包读取本服务最后成功接受的状态，不保证包含刚发生而尚未监测到的源等级变化。
+
+| 本服务亲密度状态与本次请求 | 成功响应中的`intimacy_score` |
+|---|---|
+| 尚无已接受等级，包括尚未监测到LV≥2关系 | 省略，不返回占位LV2、LV1、null或空`data`。 |
+| 请求版本等于当前已接受版本 | 省略，客户端保留当前有效快照。 |
+| 请求版本与当前已接受版本不同 | 返回`{"version": 当前版本, "data": {"level": 当前已接受等级}}`，包括请求版本高于服务端的情况。 |
+| 请求缺省版本或客户端没有快照 | 按`"0"`比较；有已接受等级时返回完整快照。 |
+
+比较直接使用本次请求的`intimacy_score_version`，不因`session_messages_sync_epoch`缺失或不匹配改成`"0"`。消息幂等重试回放首次消息回执，但重新读取当前亲密度状态并按本次请求版本计算快照，不回放首次HTTP包中的旧亲密度。
+
+客户端将亲密度`version`和完整`data`原子保存在当前账号、网红、会话实例及已确认messages Epoch绑定的内存中，不写SQLite、Outbox、消息幂等摘要或日志。退出会话、切换账号或网红、进程重启、确认messages Epoch变化或权限撤销时清空，下次真实消息上传带`"0"`。该客户端生命周期不会重置服务端亲密度版本。
+
+收到响应先处理消息回执。只有响应仍属于当前账号、网红、会话实例，且顶层`messages_sync_epoch`等于当前已确认Epoch时，才独立应用亲密度快照；历史`receipt_sync_epoch`不决定快照归属。较高版本整体替换，版本相同保留；较低版本仅在响应对应最近一次已发出的请求，且本地版本仍等于该请求报告的版本时作为服务端纠正应用，其余迟到低版本丢弃。字段省略时保留当前有效值；若本地已清空而回包省略，下次真实上传继续带`"0"`。
+
+动态亲密度状态读取暂时失败时返回可重试HTTP 503，消息可能已经提交；客户端用原`message_id`和冻结消息内容重试，并从当前会话重新取人设、亲密度请求版本。后台补传没有匹配活动会话时只处理消息回执，不把快照写入其他会话。源库监测故障不等于本地记录消失，已接受值继续有效。
+
+当前亲密度快照与主动消息的历史触发信息分别处理。例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；消息中的`proactive_context.intimacy_level`保持各自的LV3、LV4。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
+
+本期只通过`messages:batchCreate`获取该快照，不增加独立读取接口，不扩展`sync-state`、会话列表或Scope读取回包。接口仍要求至少一条真实合法消息，无上传消息时不调用空批次，也不通过同步到一条主动消息推导当前等级。
+
+### 5.5 亲密度主动消息下行示例
+
+下面是通过messages普通区间、内联读取或`messages:batchGet`取得的一条完整`SyncRecord`示例。`moment_id`是卡片任务ID，`card_id`是实际发布卡片ID；它们不是读取任务或本消息的身份。
+
+```json
+{
+  "object_id": "c5d2172fbc654f8dba7bf8cf0b603d31",
+  "object_seq": "103",
+  "sync_seq": "108",
+  "operation": "upsert",
+  "content": {
+    "message_id": "c5d2172fbc654f8dba7bf8cf0b603d31",
+    "sender_type": "role",
+    "sender_id": "role_1",
+    "origin": "server_llm",
+    "reply_to_message_id": null,
+    "proactive_context": {
+      "schema_version": 1,
+      "trigger_type": "intimacy_level_up",
+      "intimacy_level": "LV3",
+      "moment_id": "theme_task_lv3_01",
+      "card_id": "published_card_lv3_01",
+      "link_type": "intimacy_card"
+    },
+    "message_type": "text",
+    "body": {
+      "text": "感觉我们又熟悉了一点，连今天的晚霞都想先和你分享。你那边的天空是什么颜色？",
+      "attachments": []
+    },
+    "created_at_ms": 1793670000100,
+    "server_created_at_ms": 1793670000100
+  }
+}
+```
+
+后续LV4消息正式发布后取得更大的`object_seq`，两个创建时间也分别大于这条LV3消息的对应时间。客户端仍以同步外层`object_seq`作为权威创建顺序，不能按等级重新编号，也不能因收到单条消息直接推进Scope游标。主动消息的历史元数据随正文保存和展示，当前亲密度快照仍只按5.4节获取。
 
 ## 6 单次变更与状态查询：mutations
 
@@ -798,6 +888,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
           "sender_id": "user_01",
           "origin": "client_user",
           "reply_to_message_id": null,
+          "proactive_context": null,
           "message_type": "text",
           "body": {
             "text": "周末去哪里玩？",
@@ -816,8 +907,9 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
           "message_id": "msg_100",
           "sender_type": "role",
           "sender_id": "role_01",
-          "origin": "server_llm",
-          "reply_to_message_id": "msg_99",
+          "origin": "client_llm",
+          "reply_to_message_id": null,
+          "proactive_context": null,
           "message_type": "text",
           "body": {
             "text": "去公园走走吧。",
@@ -1191,6 +1283,7 @@ recent/history未选中消息时根范围为(0,0]且历史锚点null/false；ful
     "sender_id": "role_1",
     "origin": "server_multimodal",
     "reply_to_message_id": "msg_101",
+    "proactive_context": null,
     "message_type": "image",
     "body": {
       "text": null,
@@ -1318,6 +1411,7 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
         "sender_id": "user_1",
         "origin": "client_user",
         "reply_to_message_id": null,
+        "proactive_context": null,
         "message_type": "text",
         "body": {
           "text": "帮我画一张日落",
