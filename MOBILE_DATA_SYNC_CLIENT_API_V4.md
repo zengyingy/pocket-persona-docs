@@ -1,8 +1,12 @@
 # V4 客户端接口文档
 
-适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-17。
+适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-23。
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
+
+post链接多模态修订（2026-11-23，用户确认，待实现）：新增 `post_link` 任务，先检索已成功发布且未向当前用户链接的post，命中才创建异步生成任务；无匹配返回持久决策，不创建任务。服务端生成文本及post引用，命中后替代该轮客户端普通回复；无匹配或收到权威失败结论后才由客户端生成普通回复。单次模型请求默认120秒，整轮有效期默认300秒，具体接口、接管和重试规则见第12节。本修订是待实施契约，不表示当前运行代码已经开放多模态端点。
+
+演示账号回包例外（2026-11-18）：认证user_id精确为`ios-demo-test`或`zyy`时，每次成功batchCreate均返回固定`intimacy_score={version:"1",data:{level:"LV2"}}`，不受请求版本或真实亲密度状态影响，详见5.4。该例外不写真实状态、不触发主动消息；其他用户仍按真实版本条件返回。
 
 | 方法与路径 | 用途 |
 |---|---|
@@ -14,7 +18,7 @@
 | GET /auto-media/api/chat/roles/{role_id}/scopes/messages/mutations/{mutation_id} | 查询消息删除状态及历史回执 |
 | POST /auto-media/api/chat/roles/{role_id}/scopes/{scope}/read-batches | 创建本轮读取batch；同响应给边界、建议跨度及可选内联数据 |
 | POST /auto-media/api/chat/roles/{role_id}/scopes/{scope}/records:query | 按显式参数完整查询一个区间 |
-| POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks | 提交服务端生成任务 |
+| POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks | 检索post；命中才提交post链接回复生成任务 |
 | GET /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id} | 查询生成状态及当前仍有效的回复 |
 | POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}:cancel | 幂等取消业务生成任务 |
 
@@ -26,10 +30,10 @@
 
 | 类型 | JSON表示 | 含义与校验规则 |
 |---|---|---|
-| `ID` | 非空字符串，UTF-8最多128字节 | 业务或资源标识，例如 `"msg_01"`。`user_id`、`role_id`、`message_id`、`object_id`、`asset_id`、`mutation_id`、`task_id`、`moment_id`、`card_id` 都使用字符串，不按数字解析，不比较大小。具体生成方在对应字段中说明。 |
+| `ID` | 非空字符串，UTF-8最多128字节 | 业务或资源标识，例如 `"msg_01"`。`user_id`、`role_id`、`message_id`、`object_id`、`asset_id`、`mutation_id`、`task_id`、`post_id`、`moment_id`、`card_id` 都使用字符串，不按数字解析，不比较大小。具体生成方在对应字段中说明。 |
 | `UInt64String` | 十进制数字字符串 | 非负 64 位无符号整数的线格式，例如 `"0"`、`"104"`。用于同步序号、游标、`thread_revision` 及两个快照的数字版本。首期聊天同步的序号和位置上限为 `9223372036854775807`。客户端按整数精确解析和比较。 |
 | `OpaqueString` | 非空字符串，UTF-8最多128字节 | 不透明标识。`sync_epoch`、`messages_sync_epoch`、`receipt_sync_epoch` 等按完整字符串判断相等。 |
-| `TimestampMs` | JSON整数 | Unix纪元起的毫秒时间戳，非负；不是十进制数字字符串。`created_at_ms`、`server_created_at_ms`、`server_time_ms`等均使用此类型；V4读取batch不返回expires_at_ms。 |
+| `TimestampMs` | JSON整数 | Unix纪元起的毫秒时间戳，非负；不是十进制数字字符串。`created_at_ms`、`server_created_at_ms`、`server_time_ms`及任务`expires_at_ms`等均使用此类型；V4读取batch不返回expires_at_ms。 |
 | `Count` | JSON整数 | 非负条数、页容量或分区数量，不是序号字符串；具体上下限由字段约束。例如`record_count=20`、`dimension=1024`。 |
 | `Scope` | 字符串枚举 | `messages`、`memories`，区分大小写。完整同步范围还包含认证用户和当前`role_id`。 |
 | `JSONObject` | JSON对象 | 对象结构由对应业务模块定义；不能用序列化后的JSON字符串代替对象。 |
@@ -109,12 +113,12 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `message_id` | `ID` | 必填 | 消息的永久业务ID，等于同步外层`object_id`。生成端首次持久化前确定；用户输入与回复使用不同ID。 |
 | `sender_type` | 字符串枚举 | 必填 | `user`或`role`，表示实际业务发言方。不能用它推断消息从上行还是下行获得。 |
 | `sender_id` | `ID` | 必填 | user时必须等于认证用户ID，role时必须等于当前会话`role_id`。由生成端提供、服务端按权限及发送者类型校验。 |
-| `origin` | 字符串枚举 | 必填 | 服务端确认的生成来源。客户端创建入口按sender_type推导，user为`client_user`，role为`client_llm`；亲密度升级主动消息为`server_llm`。通用模型和多模态任务分别预留`server_llm`和`server_multimodal`，是否启用以完整服务设计为准。 |
+| `origin` | 字符串枚举 | 必填 | 服务端确认的生成来源。客户端创建入口按sender_type推导，user为`client_user`，role为`client_llm`；亲密度升级主动消息为`server_llm`，`post_link`任务回复为`server_multimodal`。其他通用在线回复仍未开放，客户端不得上传服务端来源。 |
 | `reply_to_message_id` | `ID`或`null` | 字段必填，可为null | 明确关联的同会话用户输入ID。新创建的客户端user和role消息、亲密度升级主动消息均为null；服务端任务有明确输入时填写该输入ID。历史消息已记录的关联继续保留。原输入删除后仍保留这个关联；本地未加载不等于原消息已删除。 |
-| `proactive_context` | `ProactiveContextV1`或`null` | 已确认下行必填，可为null；创建请求不传 | 主动消息的正式触发与内容引用信息，字段见2.2.1。普通消息为null。由服务端生成，客户端不能自行指定。 |
-| `message_type` | 字符串枚举 | 必填 | `text`、`image`、`audio`、`video`或`mixed`；必须与body中的正文及附件类型一致。 |
+| `proactive_context` | `ProactiveContextV1`或`null` | 已确认下行必填，可为null；创建请求不传 | 亲密度主动消息或post链接回复的正式触发与内容引用信息，字段见2.2.1。普通消息为null。由服务端生成，客户端不能自行指定。 |
+| `message_type` | 字符串枚举 | 必填 | 协议枚举为`text`、`image`、`audio`、`video`或`mixed`，必须与body一致；当前`post_link`回复固定为`text`，不会复制post媒体到聊天附件。 |
 | `body` | 对象，见2.3 | 必填 | 文本及媒体附件的完整内容容器。至少有非空文本或一个有效附件。 |
-| `created_at_ms` | `TimestampMs` | 必填 | 生成端确定的消息展示时间。亲密度主动消息在正式发布时分配，满足2.2.1的严格递增约束；其他消息为首次生成时确定的时间。重试时沿用原值，排序使用 object_seq。 |
+| `created_at_ms` | `TimestampMs` | 必填 | 生成端确定的消息展示时间。亲密度主动消息在正式发布时分配，满足2.2.1的严格递增约束；post链接回复也在正式发布时分配，其他消息为首次生成时确定的时间。重试时沿用原值，排序使用 object_seq。 |
 | `server_created_at_ms` | `TimestampMs` | 已确认下行必填；创建请求不传 | 服务端首次接受消息的时间。幂等重试返回首次值，不用本次回包时间替代。 |
 
 发送者、来源、回复关联、主动消息触发信息、首次时间和稳定消息顺序在创建后不可改。本版messages不提供update；删除只作用于选中消息，已存在的回复保留。
@@ -123,24 +127,40 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 
 ### 2.2.1 ProactiveContextV1：主动消息触发信息
 
-非null结构的字段全部必填。当前仅启用亲密度等级提升这一触发类型；未来其他触发类型须扩展相应业务契约，不能由客户端任意上传。
+非null结构是按`trigger_type`判别的联合类型，`schema_version`均固定为JSON整数`1`。必须完整匹配下列一个分支，每个分支内的字段全部必填，不混用字段，也不增加未定义字段。客户端不得上传或自行构造这些服务端元数据。
+
+亲密度等级提升分支保持原有结构：
 
 | 字段 | 类型 | 含义与校验规则 |
 |---|---|---|
-| `schema_version` | JSON整数，固定`1` | 主动消息元数据结构版本，与消息`sync_seq`、亲密度版本独立。 |
-| `trigger_type` | 字符串枚举 | 当前固定`intimacy_level_up`，表示首次达到某亲密度等级。 |
+| `schema_version` | JSON整数，固定`1` | 元数据结构版本，与消息`sync_seq`、亲密度版本独立。 |
+| `trigger_type` | 字符串枚举 | 固定`intimacy_level_up`，表示首次达到某亲密度等级。 |
 | `intimacy_level` | 字符串 | 本条消息对应的触发等级，格式为`LV`加无前导零的正整数，当前必须至少为`LV2`。按数字部分解释等级，不按整个字符串比较大小。 |
 | `moment_id` | `ID` | 生成该等级卡片的任务`task_id`。该字段不是聊天生成任务ID，也不是消息ID。 |
 | `card_id` | `ID` | 上述任务的`published_card_id`，对应实际采用的`current_result.cards[].card_id`。 |
-| `link_type` | 字符串枚举 | 当前固定`intimacy_card`，表示亲密度卡片链接类型。客户端结合`moment_id`、`card_id`识别卡片跳转目标。 |
+| `link_type` | 字符串枚举 | 固定`intimacy_card`，表示亲密度卡片链接类型。客户端结合`moment_id`、`card_id`识别卡片跳转目标。 |
 
-`trigger_type`表示主动聊天的触发原因，`link_type`表示关联内容的链接类型；未来增加链接类型须先扩展对应业务契约。
+post链接分支只包含以下五个字段：
+
+| 字段 | 类型 | 含义与校验规则 |
+|---|---|---|
+| `schema_version` | JSON整数，固定`1` | 元数据结构版本。 |
+| `trigger_type` | 字符串枚举 | 固定`post_link`，表示当前用户输入命中了适合链接的post。 |
+| `link_type` | 字符串枚举 | 固定`post`。 |
+| `post_id` | `ID` | 本条回复实际采用的post业务ID；客户端按自身产品能力展示。 |
+| `task_id` | `ID` | 生成本条回复的多模态任务ID，与消息ID及post_id不同。 |
+
+post链接回复满足`sender_type="role"`、`sender_id=role_id`、`origin="server_multimodal"`、`reply_to_message_id=input_message_id`、`message_type="text"`、非空`body.text`及`body.attachments=[]`。`post_id`不会写入`moment_id`或`card_id`，也不嵌入媒体二进制或临时下载URL。正文最多300个Unicode码点，且至少包含一个非空白字符。人设、近期消息和实际使用的记忆由服务端注入，记忆ID、模型信息及检索分数不通过本结构下发。
+
+`trigger_type`表示触发原因，`link_type`表示关联内容的链接类型。以下关于等级、卡片、串行和无限请求重试的规则只适用于`intimacy_level_up`；post链接任务遵循第12节的有限重试和有效期。
 
 亲密度主动消息满足`sender_type="role"`、`sender_id=role_id`、`origin="server_llm"`、`reply_to_message_id=null`、`message_type="text"`，并包含非null的上述结构。消息语言使用生成时冻结的网红`default_language`；生成结合角色人设、卡片文案和最近聊天，不召回长期记忆。
 
 每个用户与网红的组合，每个等级最多发送一次；首次接入已为LV5时只补发LV5，随后从LV5升到LV8时依次补发LV6、LV7、LV8。同一组合先完成低等级消息生成与正式发布，才生成高等级消息；在同一messages Epoch内，低等级已发送消息的`object_seq`严格小于高等级，`created_at_ms`和`server_created_at_ms`也严格递增。不同`(user_id, role_id)`组合可以并行；同一用户与不同网红也属于不同组合。
 
 低等级等待重试期间，高等级继续等待。卡片异常或模型成功返回后内容解析、结构校验失败会消耗重试次数；耗尽后该等级永久跳过，其后等级继续处理。模型请求失败不消耗次数并持续退避重试，不能把成功返回的无效内容归类为请求失败。消息提交到业务数据库即视为已发送，不设置发送有效期；删除消息不会重新触发该等级。`link_type`、`moment_id`、`card_id`和触发等级保留发布时信息，卡片后续撤回或更新不改写旧消息。具体失败分类、次数及恢复规则见服务端完整设计。
+
+post在回复正式写库后即算已链接，按用户、角色、post永久去重；删除回复、清理墓碑或切换消息Epoch均不允许重新链接。失败、到期或取消仅释放尚未发送的临时占用。
 
 本结构是消息正文的一部分，随messages的普通区间、`inline_result.records[]`和`messages:batchGet`一致返回，客户端与整条消息一同保存。删除墓碑仍严格只有`object_id`、`sync_seq`、`operation`，不携带本结构。`latest_message`继续只提供预览字段，不能据其推断触发信息。客户端`messages:batchCreate`不得上传`proactive_context`或服务端`origin`；它们也不属于`metadata.context_provenance`。
 
@@ -198,10 +218,10 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `structured_information` | `StructuredInformationSnapshot` | 按第 5.2 节的版本规则返回 | 当前网红的完整人设快照。省略时保留当前会话中仍有效的快照。 |
 | `structured_information.version` | `UInt64String` | 结构出现时必填 | 按角色维护的正整数版本，首次发布为 `"1"`，完整人设实际变化时递增。`"0"` 保留给客户端表示无快照。版本独立于消息 Epoch、`sync_seq` 和亲密度版本。 |
 | `structured_information.data` | `JSONObject` | 结构出现时必填 | 完整 `persona_features`，保留原始键名、未知字段、嵌套层次、数组顺序和值类型。按版本整体替换，`{}` 是有效空人设。单个完整快照上限为 512 KiB，按未压缩紧凑 UTF-8 JSON 计。 |
-| `intimacy_score` | `IntimacyScoreSnapshot` | 本服务已有已接受等级且请求版本不等时返回 | 当前认证用户与该网红的完整亲密度快照；与structured_information独立更新。省略时保留当前会话中仍有效的快照。 |
-| `intimacy_score.version` | `UInt64String` | 结构出现时必填 | 每个用户与网红组合独立维护的正整数版本，首次接受等级时为`"1"`；只在接受更高等级时递增，不与人设版本横向比较，也不随消息Epoch变化。`"0"`表示客户端无快照。 |
+| `intimacy_score` | `IntimacyScoreSnapshot` | 普通用户已有已接受等级且请求版本不等时返回；演示账号每次成功回包均返回 | 普通用户为当前认证用户与该网红的完整亲密度快照；ios-demo-test/zyy固定版本1、LV2，详见5.4。与structured_information独立更新；省略时保留当前会话中仍有效的快照。 |
+| `intimacy_score.version` | `UInt64String` | 结构出现时必填 | 普通用户每个用户与网红组合独立维护的正整数版本，首次接受等级时为`"1"`，只在接受更高等级时递增；演示账号固定`"1"`，不代表真实关系版本。不与人设版本横向比较，也不随消息Epoch变化。`"0"`表示客户端无快照。 |
 | `intimacy_score.data` | `JSONObject` | 结构出现时必填 | 完整亲密度业务值，当前仅有必填的`level`字段；不使用旧`score`字段。 |
-| `intimacy_score.data.level` | 字符串 | 结构出现时必填 | 本服务最后接受的等级，格式为`LV`加无前导零的正整数，当前至少为`LV2`，例如`"LV2"`、`"LV10"`。不返回null、虚构默认等级或数值分数。 |
+| `intimacy_score.data.level` | 字符串 | 结构出现时必填 | 普通用户为本服务最后接受的等级，格式为`LV`加无前导零的正整数，当前至少为`LV2`，例如`"LV2"`、`"LV10"`；普通用户不返回null、虚构默认等级或数值分数。演示账号固定`"LV2"`，详见5.4。 |
 
 两个快照独立处理，均通过消息创建回包获取。`sync-state`不提供亲密度查询参数或快照，`read-batches`、`records:query`及`messages:batchGet`只读取其指定的同步业务对象，不另附当前亲密度快照。没有新消息时不构造假消息或空`messages`批次获取快照。`persona_features`由服务端组装，独立提取的语言、展示名和媒体属性有各自的用途。端侧生成时，按固定键顺序遍历快照的顶层字段，逐项拼接为`key: value`。字符串直接使用，其余值用JSON表示。
 
@@ -442,11 +462,11 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `messages_sync_epoch` | OpaqueString | 成功必填 | 当前服务端messages代次，与历史回执代次分开。 |
 | `sync_hints` | SyncHint数组 | 成功必填，可为[] | 按本次请求重新计算的当前变化提示，不回放旧整个HTTP包。 |
 | `structured_information` | StructuredInformationSnapshot | 已发布且版本不等时返回 | 比较请求中的人设版本与该角色当前版本，包括客户端版本过高的情况。字段见第 2.6 节，接收规则见第 5.2 节。 |
-| `intimacy_score` | IntimacyScoreSnapshot | 已有已接受等级且版本不等时返回 | 比较请求亲密度版本与当前用户、网红组合的已接受版本，包括请求版本过高的情况；与消息Epoch无关。字段见2.6，应用与重试规则见5.4。 |
+| `intimacy_score` | IntimacyScoreSnapshot | 普通用户已有已接受等级且版本不等时返回；ios-demo-test/zyy每次成功回包均返回 | 普通用户比较请求亲密度版本与当前用户、网红组合的已接受版本，包括请求版本过高的情况；演示账号跳过快照读取及版本比较，固定版本1、LV2。与消息Epoch无关；字段见2.6，应用与重试规则见5.4。 |
 
 服务端按 `sender_type` 确定 `origin`，user 对应 `client_user`，role 对应 `client_llm`。新建客户端消息的 `reply_to_message_id` 为 null，实际生成依赖由 `context_provenance` 单独表达。`object_seq`、`sync_seq`、`server_created_at_ms` 由服务端在回执中给出。
 
-本接口不接受客户端上传`origin`、`proactive_context`、`link_type`、`moment_id`、`card_id`或触发等级来创建主动消息。`results`只确认本次上传消息，后台生成的主动消息通过messages正式同步读取，不作为本接口额外生成的消息混入`results`。
+本接口不接受客户端上传`origin`、`proactive_context`、`link_type`、`moment_id`、`card_id`、`post_id`、`task_id`或触发等级来伪造服务端消息。`results`只确认本次上传消息，后台生成的主动消息通过messages正式同步读取，不作为本接口额外生成的消息混入`results`。
 
 ### 5.1 端侧回复的生成来源
 
@@ -595,24 +615,29 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 ### 5.4 亲密度快照的回传、应用与重试
 
-亲密度按认证用户和路径网红维护，独立版本只反映本服务已接受的`level`。首次接受LV≥2时版本为`"1"`，以后只接受更高等级；一次监测从LV2直接变为LV5时只递增一次版本。源等级相同、降低或源记录被删除时不改变版本；后两种情况保留本服务最后接受的值并记录error。卡片调整、主动消息补发进度、失败重试及消息Epoch变化都不推进该版本。源库监测周期默认3分钟、可配置，回包读取本服务最后成功接受的状态，不保证包含刚发生而尚未监测到的源等级变化。
+演示回包例外优先：认证上下文的完整user_id大小写敏感地精确匹配`ios-demo-test`或`zyy`时，每次成功batchCreate（包括幂等重试成功）均返回`{"version":"1","data":{"level":"LV2"}}`。即使没有真实亲密度记录，或真实记录已有其他等级和版本，返回也相同；intimacy_score_version省略、"0"、"1"或任何其他合法值都不影响该字段的出现及取值。此分支跳过真实亲密度快照读取和版本比较，正常鉴权、角色/消息校验、版本字段语法校验及消息幂等规则仍适用。
+
+此例外只作用于响应组装，不写入真实亲密度、不推进持久版本，也不登记或触发主动消息；后台仍按真实源数据监测和生成。两个演示账号之外的用户继续使用下述真实快照规则。
+
+普通用户的回包亲密度按认证用户和路径网红维护，独立版本只反映本服务已接受的`level`。首次接受LV≥2时版本为`"1"`，以后只接受更高等级；一次监测从LV2直接变为LV5时只递增一次版本。源等级相同、降低或源记录被删除时不改变版本；后两种情况保留本服务最后接受的值并记录error。卡片调整、主动消息补发进度、失败重试及消息Epoch变化都不推进该版本。源库监测周期默认3分钟、可配置，普通用户回包读取本服务最后成功接受的状态，不保证包含刚发生而尚未监测到的源等级变化。
 
 | 本服务亲密度状态与本次请求 | 成功响应中的`intimacy_score` |
 |---|---|
-| 尚无已接受等级，包括尚未监测到LV≥2关系 | 省略，不返回占位LV2、LV1、null或空`data`。 |
-| 请求版本等于当前已接受版本 | 省略，客户端保留当前有效快照。 |
-| 请求版本与当前已接受版本不同 | 返回`{"version": 当前版本, "data": {"level": 当前已接受等级}}`，包括请求版本高于服务端的情况。 |
-| 请求缺省版本或客户端没有快照 | 按`"0"`比较；有已接受等级时返回完整快照。 |
+| 认证user_id精确为ios-demo-test或zyy，任意真实状态及合法请求版本 | 每次成功回包均固定返回`{"version":"1","data":{"level":"LV2"}}`，不读取真实快照、不比较版本。 |
+| 普通用户尚无已接受等级，包括尚未监测到LV≥2关系 | 省略，不返回占位LV2、LV1、null或空`data`。 |
+| 普通用户请求版本等于当前已接受版本 | 省略，客户端保留当前有效快照。 |
+| 普通用户请求版本与当前已接受版本不同 | 返回`{"version": 当前版本, "data": {"level": 当前已接受等级}}`，包括请求版本高于服务端的情况。 |
+| 普通用户请求缺省版本或客户端没有快照 | 按`"0"`比较；有已接受等级时返回完整快照。 |
 
-比较直接使用本次请求的`intimacy_score_version`，不因`session_messages_sync_epoch`缺失或不匹配改成`"0"`。消息幂等重试回放首次消息回执，但重新读取当前亲密度状态并按本次请求版本计算快照，不回放首次HTTP包中的旧亲密度。
+普通用户比较直接使用本次请求的`intimacy_score_version`，不因`session_messages_sync_epoch`缺失或不匹配改成`"0"`。消息幂等重试回放首次消息回执，但普通用户重新读取当前亲密度状态并按本次请求版本计算快照；演示账号仍固定返回版本1、LV2，不回放首次HTTP包中的旧亲密度。
 
 客户端将亲密度`version`和完整`data`原子保存在当前账号、网红、会话实例及已确认messages Epoch绑定的内存中，不写SQLite、Outbox、消息幂等摘要或日志。退出会话、切换账号或网红、进程重启、确认messages Epoch变化或权限撤销时清空，下次真实消息上传带`"0"`。该客户端生命周期不会重置服务端亲密度版本。
 
-收到响应先处理消息回执。只有响应仍属于当前账号、网红、会话实例，且顶层`messages_sync_epoch`等于当前已确认Epoch时，才独立应用亲密度快照；历史`receipt_sync_epoch`不决定快照归属。较高版本整体替换，版本相同保留；较低版本仅在响应对应最近一次已发出的请求，且本地版本仍等于该请求报告的版本时作为服务端纠正应用，其余迟到低版本丢弃。字段省略时保留当前有效值；若本地已清空而回包省略，下次真实上传继续带`"0"`。
+收到响应先处理消息回执。只有响应仍属于当前账号、网红、会话实例，且顶层`messages_sync_epoch`等于当前已确认Epoch时，才独立应用亲密度快照；历史`receipt_sync_epoch`不决定快照归属。普通用户较高版本整体替换，版本相同保留；较低版本仅在响应对应最近一次已发出的请求，且本地版本仍等于该请求报告的版本时作为服务端纠正应用，其余迟到低版本丢弃。演示账号通过相同归属校验后，将返回的固定`version:"1"`和`data:{level:"LV2"}`整体应用；不因旧缓存版本相同或更高而保留其他等级，例如旧缓存为版本1、LV5时也替换为固定LV2。字段省略时保留当前有效值；若本地已清空而回包省略，下次真实上传继续带`"0"`。
 
-动态亲密度状态读取暂时失败时返回可重试HTTP 503，消息可能已经提交；客户端用原`message_id`和冻结消息内容重试，并从当前会话重新取人设、亲密度请求版本。后台补传没有匹配活动会话时只处理消息回执，不把快照写入其他会话。源库监测故障不等于本地记录消失，已接受值继续有效。
+普通用户动态亲密度状态读取暂时失败时返回可重试HTTP 503，消息可能已经提交；客户端用原`message_id`和冻结消息内容重试，并从当前会话重新取人设、亲密度请求版本。演示账号跳过该亲密度读取，其他消息/人设依赖错误仍正常处理。后台补传没有匹配活动会话时只处理消息回执，不把快照写入其他会话。源库监测故障不等于本地记录消失，已接受值继续有效。
 
-当前亲密度快照与主动消息的历史触发信息分别处理。例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；消息中的`proactive_context.intimacy_level`保持各自的LV3、LV4。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
+当前亲密度快照与主动消息的历史触发信息分别处理。普通用户例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；演示账号仍返回固定版本1、LV2。消息中的`proactive_context.intimacy_level`保持真实触发时的等级。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
 
 本期只通过`messages:batchCreate`获取该快照，不增加独立读取接口，不扩展`sync-state`、会话列表或Scope读取回包。接口仍要求至少一条真实合法消息，无上传消息时不调用空批次，也不通过同步到一条主动消息推导当前等级。
 
@@ -1203,100 +1228,137 @@ recent/history未选中消息时根范围为(0,0]且历史锚点null/false；ful
 
 ## 12 服务端多模态任务
 
-### 12.1 创建任务
+本节是2026-11-23已确认、待实现的post链接契约。当前仅设计支持`post_link`，不开放`image_generation`、媒体生成或任意通用模型命令。客户端先上传并确认用户消息，再调用本接口；服务端以已提交正文检索，不接受另传message正文、post_id、语言或检索阈值。
+
+### 12.1 创建请求与检索决策
 
 `POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks`。
 
 | 请求字段 | 类型 | 必填条件 | 含义与使用规则 |
 |---|---|---|---|
-| `messages_sync_epoch` | OpaqueString | 必填 | 生成所依据的输入消息代次，任务完成写入前还要再次匹配。 |
-| `input_message_id` | ID | 必填 | 已由服务端确认、仍有效的同会话用户消息；不得引用其他用户/角色消息。 |
-| `input_sync_seq` | UInt64String | 必填 | 创建任务时所依据输入的版本，不是object_seq；输入删除/变化后不能发布过期结果。 |
-| `reply_message_id` | ID | 必填 | 开始生成前确定的新回复ID，也是本次生成业务幂等键，与input_message_id不同。 |
-| `task_type` | string | 必填 | 服务端支持的多模态任务类型。具体类型由任务模块能力定义，未支持的值拒绝，不能作为任意命令执行。 |
-| `options` | JSONObject | 可省略，默认{} | 影响本次生成的固定业务参数，参与幂等比较。内部字段由该task_type的业务Schema规定；不能用同输入ID另外传一份不同正文绕过已确认输入。 |
+| `messages_sync_epoch` | OpaqueString | 必填 | 输入用户消息所在的messages代次；创建、生成及发布前核验，不静默迁移旧输入。 |
+| `input_message_id` | ID | 必填 | 当前认证用户、路径角色下已确认且有效的user消息。 |
+| `input_sync_seq` | UInt64String | 必填 | 输入的正式正版本号，不是object_seq。 |
+| `reply_message_id` | ID | 必填 | 客户端首次发起前生成并持久化的新回复ID，也是本轮业务幂等键，与input_message_id不同；后续HTTP重试原样复用。 |
+| `task_type` | string | 必填 | 固定`post_link`；其他值返回422 OPERATION_NOT_SUPPORTED。 |
+| `options` | JSONObject | 可省略，默认{} | 当前只允许空对象，非空或含未知键返回400 INVALID_ARGUMENT；省略与{}按同一规范摘要处理。 |
 
-创建结果包含task_id/status/reply_message_id及公共响应字段，其他TaskState字段在实际可用时提供。reply_message_id相同但参数不同返回幂等冲突。
+所有请求均按认证用户与路径角色隔离。首次创建时输入不存在、已删除或Epoch/版本无效，返回409 MULTIMODAL_INPUT_INVALID，不创建任务；已登记业务请求优先恢复其原有决策。对于已建任务，原输入失效的处理见12.2。同一`reply_message_id`携带不同冻结参数返回409 IDEMPOTENCY_CONFLICT。`X-Request-ID`只标识单次HTTP调用，重试可以改变，不会产生新一轮检索。
 
-假设任务模块支持 `image_generation`，并允许空 `options`。
+同一输入的身份为`(user_id, role_id, messages_sync_epoch, input_message_id, input_sync_seq)`，本期每个输入只允许一轮`post_link`决策。同一输入换新`reply_message_id`返回409 MULTIMODAL_INPUT_ALREADY_DECIDED，按其规范业务ID恢复原请求或任务，不能绕过去重重新检索。后续新的用户消息可正常发起新的请求。
 
-`POST /auto-media/api/chat/roles/role_1/multimodal-tasks`，本次请求的 `X-Request-ID` 为 `req_task_1`。请求正文如下。
+服务端先检索该角色已成功发布、尚未向该用户链接且未被其他任务占用的post。首段检索默认总预算15秒，每个外部阶段最多尝试2次；该预算包含超时和退避，不是每次调用15秒。仅查询成功并完成筛选后才可作出无匹配决定。超时、上游错误或协议异常不会转换成无匹配。
+
+创建有两个成功分支：
+
+| HTTP / 分支 | 必返业务字段 | 语义 |
+|---|---|---|
+| 200，无匹配 | `matched=false`、`reply_message_id` | 持久保存本轮无匹配回执，不创建生成任务；不返回task_id/status，也不虚构failed任务。 |
+| 202，首次命中并创建任务 | `matched=true`、`task_id`、`status`、`reply_message_id`、`expires_at_ms` | 任务已持久接受，返回queued或当前正在执行的running状态。 |
+| 200，已命中请求的幂等重试 | `matched=true`及原任务的TaskState | 返回原task_id和原reply_message_id，可以返回当前正式结果；不会再检索或创建第二条回复。 |
+
+每个分支都带第1节公共响应字段。无匹配回执永久固定：之后出现新post、服务配置改变或相同请求重试，均返回原结论；服务端不等待新post、不后台重新匹配。命中时回执、任务及post临时占用原子提交；客户端只能在收到权威决策后选择本轮生成端。
+
+创建阶段输入无效返回409 MULTIMODAL_INPUT_INVALID；Epoch冲突继续返回公共409 SYNC_EPOCH_MISMATCH。首次校验失败不登记新请求；已登记但未建任务期间输入失效时，须先查清原决定尚未提交，再持久终止。已确认无匹配仍回放原200，已建任务按取消/查证处理。任何客户端接管前均须核对当前输入仍有效。
+
+创建前的暂时检索故障返回503 POST_RETRIEVAL_FAILED、`retryable=true`，原请求可在剩余期限内重试；不冻结成无匹配，客户端也不能据此自行接管。首次请求登记即冻结`expires_at_ms`，默认是该时刻加300000毫秒，包含首段检索、排队、记忆检索、模型生成、退避与发布准备，任何重试均不延长。若到期时确认本轮从未创建任务，服务端原子保存失败回执，POST返回410 MULTIMODAL_REQUEST_EXPIRED、`retryable=false`；此权威失败允许客户端接管。如果已创建任务，POST只能回放该任务，不能使用“未建任务”失败分支。
+
+命中创建示例：
+
+`POST /auto-media/api/chat/roles/role_1/multimodal-tasks`，本次`X-Request-ID=req_post_create_1`。
 
 ```json
 {
   "messages_sync_epoch": "msg-e1",
   "input_message_id": "msg_101",
   "input_sync_seq": "106",
-  "reply_message_id": "msg_img_1",
-  "task_type": "image_generation",
+  "reply_message_id": "replymsg_post_1",
+  "task_type": "post_link",
   "options": {}
 }
 ```
 
-响应：
+HTTP 202响应：
 
 ```json
 {
-  "request_id": "req_task_1",
-  "server_time_ms": 1793670000000,
-  "task_id": "task_1",
+  "request_id": "req_post_create_1",
+  "server_time_ms": 1795410001200,
+  "matched": true,
+  "task_id": "task_post_1",
   "status": "queued",
-  "reply_message_id": "msg_img_1"
+  "reply_message_id": "replymsg_post_1",
+  "expires_at_ms": 1795410300000
 }
 ```
 
-### 12.2 查询任务与结果
+无匹配示例，另一次新输入对应`replymsg_post_2`；此业务请求的重试继续返回相同结论：
 
-`GET /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}`。无请求正文。创建和查询使用以下TaskState字段：
+```json
+{
+  "request_id": "req_post_no_match_1",
+  "server_time_ms": 1795410001300,
+  "matched": false,
+  "reply_message_id": "replymsg_post_2"
+}
+```
+
+### 12.2 查询任务与当前正式结果
+
+`GET /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}`。无请求正文。查询只能读取当前认证用户、角色下的任务，成功返回HTTP 200及TaskState；不能猜测其他用户任务。
 
 | 响应字段 | 类型 | 出现条件 | 含义与使用规则 |
 |---|---|---|---|
 | `task_id` | ID | 必填 | 服务端分配的异步资源ID，用于查询与取消；不等于消息ID。 |
-| `status` | queued/running/completed/cancelled/failed | 必填 | 分别表示已排队、正在处理、结果已提交、已取消、生成失败。completed只表示任务曾完成，不表示回复现在一定仍存在。 |
-| `reply_message_id` | ID | 必填 | 本任务绑定的稳定回复消息ID，不因查询或计算重试改变。 |
-| `reply_sync_epoch` | OpaqueString | completed必填，其他省略 | 回复首次落库的messages代次；不能用当前Epoch包装历史结果。 |
-| `message` | MessageContent或null | 查询/取消时必填；创建可省略 | 仅在回复属于当前代次且当前权威对象仍有效时返回完整正文，其他情况null；不回放已删除的首次制品。消息字段见2。 |
-| `object_seq` | UInt64String或null | 查询/取消时必填；创建可省略，但message非空时必填且非null | 回复的不可变创建号，位于TaskState同层；message为空时为null。与正式SyncRecord.object_seq及创建回执相同，不自动标读。 |
-| `sync_seq` | UInt64String或null | 查询/取消时必填；message非空必须非null | 返回正文当前对象版本；message为空时为null。它不是可以直接写入本机cursor的位置。 |
-| `sync_hints` | SyncHint数组 | 查询/取消时必填，可为[]；创建可省略 | 当前服务端各Scope的变化提示，与任务历史回执分开；不足以证明本机已下载结果。 |
-| `error` | Error | status=failed必填；其他省略 | 已终止任务的原因；HTTP200可以成功查询到失败任务，内部字段见1。 |
+| `status` | queued/running/completed/cancelled/failed | 必填 | 排队、执行中、已提交、已取消、已失败。completed只表示任务曾完成，不保证回复当前仍存在。 |
+| `reply_message_id` | ID | 必填 | 稳定回复消息ID，不因查询、生成重试或服务重启改变。 |
+| `expires_at_ms` | TimestampMs | 必填 | 首次请求登记时冻结的绝对到期时间，创建、查询和取消响应一致；默认首次登记后300秒。不是客户端可以自行推定failed的依据。 |
+| `reply_sync_epoch` | OpaqueString | completed必填；其他省略 | 回复首次正式发布的messages代次；不能改用当前Epoch包装历史结果。 |
+| `message` | MessageContent或null | 查询/取消必填；创建可省略 | 仅在回复属于当前代次且当前权威对象仍有效时返回完整正文，否则为null；不回放任务中暂存或已删除的正文。 |
+| `object_seq` | UInt64String或null | 查询/取消必填；创建可省略，但message非空时必填且非null | 回复正式创建号；message为空时为null。不能据此自动标读。 |
+| `sync_seq` | UInt64String或null | 查询/取消必填；创建可省略，但message非空时必填且非null | 回复当前正式对象版本；message为空时为null。不能直接写入本机cursor。 |
+| `sync_hints` | SyncHint数组 | 查询/取消必填，可为[]；创建可省略 | 当前Scope变化提示；不足以证明本机已经下载结果。 |
+| `error` | Error | failed必填；其他省略 | 权威终止原因，`retryable=false`；内部重试期间仍为queued/running，不通过failed表示“稍后再试”。 |
 
-临时任务正文即使存在，也不代替区间读取的权威合并；不推进cursor、历史锚点或标读边界。message=null不应被通用代码随意解释成“删除整个会话”。
+回复正文最多300个Unicode码点且非空白，不自动截断超限结果；非法输出仍受总尝试预算约束。生成最多尝试3次，包括首次调用；单次模型请求默认超时120秒，实际超时取`min(120秒, 当前剩余有效期)`，第三次不保证有完整120秒。配置调整只影响新的请求，已登记请求沿用冻结预算。无合格长期记忆属于正常情况；记忆检索故障重试后仍失败时，可以只用近期聊天、人设和post生成。
 
-任何创建/查询/取消响应只要提供非null message，就必须同时提供非null object_seq和sync_seq；若message=null，两者均为null（查询/取消必返）。临时任务数据仍不能推进权威扫描位置。
+服务端仅支持zh/en/ja语言族。按当前输入检测的语言族与角色`supported_languages`匹配，范围外、不支持或检测不确定时使用`default_language`，保留选定的完整地区、脚本标签。客户端不另传语言，也不将post自身语言作为回复语言。
 
-`GET /auto-media/api/chat/roles/role_1/multimodal-tasks/task_1`，本次请求的 `X-Request-ID` 为 `req_task_2`。无请求正文。
+已创建任务执行期间发现原输入被删除、消息Epoch或输入版本失效，任务在确认未发布后转为cancelled，禁止旧结果发布，不自动触发客户端普通回复。若发布结果未决，先查证原事务；已提交仍恢复completed，不能将已有消息改成未发送。
 
-响应（HTTP 200）：
+模型合法输出还不算completed；只有正式消息和永久已链接记录在同一事务提交后才完成。内部发布结果未知时，对外继续返回running并查证原事务，即使已经经过`expires_at_ms`也不能先返回failed或释放post。确认发布未提交后才可失败或取消；确认已提交则返回completed。这是避免服务端晚到回复与客户端接管回复同时出现的必要规则。
+
+`GET /auto-media/api/chat/roles/role_1/multimodal-tasks/task_post_1`，`X-Request-ID=req_post_query_1`，HTTP 200示例：
 
 ```json
 {
-  "request_id": "req_task_2",
-  "server_time_ms": 1793670000000,
-  "task_id": "task_1",
+  "request_id": "req_post_query_1",
+  "server_time_ms": 1795410011000,
+  "task_id": "task_post_1",
   "status": "completed",
-  "reply_message_id": "msg_img_1",
+  "reply_message_id": "replymsg_post_1",
+  "expires_at_ms": 1795410300000,
   "reply_sync_epoch": "msg-e1",
   "message": {
-    "message_id": "msg_img_1",
+    "message_id": "replymsg_post_1",
     "sender_type": "role",
     "sender_id": "role_1",
     "origin": "server_multimodal",
     "reply_to_message_id": "msg_101",
-    "proactive_context": null,
-    "message_type": "image",
-    "body": {
-      "text": null,
-      "attachments": [
-        {
-          "asset_id": "asset_1",
-          "media_type": "image",
-          "mime_type": "image/jpeg"
-        }
-      ]
+    "proactive_context": {
+      "schema_version": 1,
+      "trigger_type": "post_link",
+      "link_type": "post",
+      "post_id": "post_123",
+      "task_id": "task_post_1"
     },
-    "created_at_ms": 1793669999995,
-    "server_created_at_ms": 1793669999999
+    "message_type": "text",
+    "body": {
+      "text": "你说想看看海，我也想起了之前分享的那片海。一起看看吧。",
+      "attachments": []
+    },
+    "created_at_ms": 1795410010000,
+    "server_created_at_ms": 1795410010000
   },
   "object_seq": "103",
   "sync_seq": "109",
@@ -1311,33 +1373,91 @@ recent/history未选中消息时根范围为(0,0]且历史锚点null/false；ful
 }
 ```
 
+失败示例，模型总尝试次数耗尽：
+
+```json
+{
+  "request_id": "req_post_failed_1",
+  "server_time_ms": 1795410245000,
+  "task_id": "task_post_3",
+  "status": "failed",
+  "reply_message_id": "replymsg_post_3",
+  "expires_at_ms": 1795410300000,
+  "message": null,
+  "object_seq": null,
+  "sync_seq": null,
+  "sync_hints": [],
+  "error": {
+    "code": "MULTIMODAL_GENERATION_FAILED",
+    "message": "本轮回复生成失败",
+    "retryable": false,
+    "retry_after_ms": 0
+  }
+}
+```
+
+任务结果是按ID读取正式消息的补充入口，不推进cursor、历史锚点或标读边界；正式区间同步仍负责权威合并。`completed + message=null`可能表示回复已被删除或处于历史Epoch，不会创建第二条回复，不应解释成“任务失败”或“删除整个会话”。
+
 ### 12.3 取消任务
 
-`POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}:cancel`。不需要新业务幂等ID，请求无业务正文或使用空对象{}。返回HTTP200及TaskState；queued/running任务取消成功后为cancelled，已completed则返回既有完成状态，不删除用户要求保留的回复。重复取消不创建新任务。
+`POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}:cancel`。无业务正文或使用空对象`{}`，不需要新的业务幂等ID；返回HTTP 200及TaskState。
 
-这里取消另一个仍在排队的任务 `task_2`。
+queued/running任务只有在确认未提交正式回复后才能转为cancelled，同时禁止旧worker继续发布并释放临时post占用；已completed则返回既有完成状态，不删除回复。内部存在未决发布时，取消请求先登记，当前响应仍可为running，客户端继续查询，直到确认的cancelled或completed。重复取消不会创建新任务。
 
-`POST /auto-media/api/chat/roles/role_1/multimodal-tasks/task_2:cancel`，本次请求的 `X-Request-ID` 为 `req_task_3`。请求正文如下。
+`POST /auto-media/api/chat/roles/role_1/multimodal-tasks/task_post_4:cancel`，`X-Request-ID=req_post_cancel_1`：
 
 ```json
 {}
 ```
 
-响应（HTTP 200）：
+已确认取消的HTTP 200响应：
 
 ```json
 {
-  "request_id": "req_task_3",
-  "server_time_ms": 1793670000000,
-  "task_id": "task_2",
+  "request_id": "req_post_cancel_1",
+  "server_time_ms": 1795410002500,
+  "task_id": "task_post_4",
   "status": "cancelled",
-  "reply_message_id": "msg_img_2",
+  "reply_message_id": "replymsg_post_4",
+  "expires_at_ms": 1795410300000,
   "message": null,
   "object_seq": null,
   "sync_seq": null,
   "sync_hints": []
 }
 ```
+
+cancelled是不可复活终态，禁止后续重试生成或发布，不会自动触发客户端普通回复。取消已完成任务不会撤回post链接记录；如需删除已发布消息，继续使用第6节消息删除接口。
+
+### 12.4 客户端本轮处理与安全接管
+
+1. 先上传并确认用户消息，冻结输入版本及新的`reply_message_id`，发起一次`post_link`请求。
+2. 接到`matched=false`后，本轮走客户端普通回复；不为相同输入更换reply ID轮询post。
+3. 接到`matched=true`后停止本轮客户端普通回复，查询同一任务。只有服务端正式确认failed后才接管；普通回复使用新的消息ID，不能复用已预留的`reply_message_id`。
+4. POST响应丢失、503、查询404、网络超时或本地时间超过`expires_at_ms`时，保留原请求并恢复原任务状态；这些现象都不能证明服务端永远不会发布。未建任务请求只有收到持久的MULTIMODAL_REQUEST_EXPIRED失败回执才可接管。
+5. completed只接收当前仍有效的正式消息；message=null也不重新生成。按现有messages同步流程合并，保留正式post引用，cursor和未读边界不受任务查询直接推动。
+6. 用户主动取消后等待确认的cancelled；此操作不隐含自动普通回复。失败、取消或到期均不复活本轮请求，也不允许换ID重建。
+
+任何客户端接管前均须核对原输入仍有效、当前会话与messages Epoch匹配；不对已删除输入继续生成普通回复。服务端提供文本及post_id，客户端具体如何展示post由自身产品决定；本协议不增加post媒体上传、详情获取、推送或送达接口。已发布post回复删除后，仍保持“该post曾向该用户链接”的永久事实。
+
+### 12.5 任务与创建错误
+
+| 场景 / code | HTTP或TaskState | 客户端处理 |
+|---|---|---|
+| POST_RETRIEVAL_FAILED | HTTP 503，retryable=true | post检索阶段暂时失败，尚未形成无匹配决定；按原参数及原reply ID在剩余期限内重试，不直接接管。 |
+| MULTIMODAL_REQUEST_IN_PROGRESS | HTTP 409，retryable=true | 同业务请求正在形成决策；按retry_after_ms重试原请求，不换ID并发创建。 |
+| MULTIMODAL_REQUEST_EXPIRED | HTTP 410，retryable=false | 仅用于期限耗尽且确认从未建任务的持久失败回执；允许本轮客户端普通回复，同请求以后仍回放该失败。 |
+| MULTIMODAL_INPUT_ALREADY_DECIDED | HTTP 409，retryable=false | 同输入已绑定其他业务reply ID；按details恢复规范请求或任务，不换ID重检。 |
+| IDEMPOTENCY_CONFLICT | HTTP 409，retryable=false | 相同reply ID携带不同冻结参数，修正调用状态；不是模型失败。 |
+| MULTIMODAL_TASK_EXPIRED | TaskState failed，HTTP 200 | 服务端确认任务到期且未发布；允许客户端接管。 |
+| MULTIMODAL_GENERATION_FAILED | TaskState failed，HTTP 200 | 有限生成尝试耗尽、必需输入超预算或依赖不可恢复，且确认未发布；当前输入仍有效时允许客户端接管。 |
+| MULTIMODAL_INPUT_INVALID | HTTP 409，retryable=false | 创建阶段输入不存在、已删除或版本无效；首次校验失败不登记请求，登记后未建任务时须查证后持久终止。Epoch冲突使用SYNC_EPOCH_MISMATCH；停止旧轮，不对失效输入生成普通回复。 |
+| 输入失效（已建任务） | TaskState cancelled，HTTP 200 | 原输入被删除或Epoch/版本失效，确认未发布后取消；不返回failed的error，不自动普通回复。 |
+| MULTIMODAL_TASK_NOT_FOUND | HTTP 404，retryable=false | 任务不存在或不可访问，不代表任务权威失败；检查账号、角色、任务ID或以原请求恢复，不自行接管。 |
+| MULTIMODAL_POST_INVALID | TaskState failed，HTTP 200 | 选定post不再成功发布或其概述变化，旧制品不能发布；本轮不重新检索，可按当前有效输入生成普通回复。 |
+| OPERATION_NOT_SUPPORTED | HTTP 422 | task_type未支持或功能未部署启用，不能视为已接收任务；不返回task_id。 |
+
+所有failed任务的`error.retryable=false`，后续GET成功读取同一个失败结论并不表示可以重新提交本轮。普通身份、角色存在性、参数、限流及同步Epoch错误继续使用公共错误规则。服务端不会向客户端输出模型配置、检索阈值、候选列表、记忆正文或数据库连接信息。
 
 ## 13 错误详情字段
 
@@ -1356,6 +1476,9 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | `base_sync_seq` | UInt64String，可选 | 业务Mutation依据的对象版本，不是创建号。 |
 | `current_sync_seq` | UInt64String，可选 | 当前对象版本；不得据此改负载并复用原操作ID。 |
 | `deleted` | boolean，可选 | 对象当前是否为墓碑。 |
+| `canonical_reply_message_id` | ID，MULTIMODAL_INPUT_ALREADY_DECIDED时必填 | 当前输入已绑定的规范业务回复ID，用于恢复原请求；不是生成新回复的许可。 |
+| `task_id` | ID，多模态冲突且已有任务时返回 | 当前认证用户、角色下已经存在的任务ID；无匹配或未建任务失败不提供。 |
+| `expires_at_ms` | TimestampMs，多模态错误时可返回 | 首次请求登记时冻结的业务期限，不因重试刷新；本地超过此时刻不能直接推断任务失败。 |
 | `action` | string，可选 | 恢复提示，如 `retry_smaller_range`、`rebuild_recent`、`rebuild_full`。最终行为仍按错误码和本地任务状态判断。 |
 | `read_through_object_seq` | UInt64String，可选 | 非法阅读位置请求值。 |
 | `current_object_seq` | UInt64String，可选 | 阅读位置校验时messages的创建高水位。 |
@@ -1433,7 +1556,7 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | 400 INVALID_ARGUMENT / INVALID_READ_POSITION | 修正参数；包括格式错误、被篡改或与分页参数不匹配的page_token，以及权威源确认的未来游标或不合法区间 |
 | 401 TOKEN_EXPIRED | 刷新登录凭证，保留仍有效的本地进度 |
 | 403 FORBIDDEN | 停止相应会话读写，清除已撤销权限会话的内存快照，保留 Outbox |
-| 404 NOT_FOUND | 业务Mutation/生成任务不存在或不可访问 |
+| 404 NOT_FOUND / MULTIMODAL_TASK_NOT_FOUND | 业务Mutation/生成任务不存在或不可访问；多模态查询404不是权威任务失败，不直接触发客户端接管 |
 | 409 IDEMPOTENCY_CONFLICT | 同业务操作ID使用了不同冻结参数；创建读取batch没有该幂等语义 |
 | 409 BASE_SYNC_SEQ_CONFLICT / OBJECT_DELETED | 同步后交业务处理，保留草稿/原操作 |
 | 409 SYNC_EPOCH_MISMATCH | 停止旧任务，重建相应Scope |
@@ -1442,5 +1565,10 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | 410 PAGE_TOKEN_EXPIRED | 会话列表分页标识或绑定集合已过期、被回收；丢弃该轮分页进度，page_token重置为null，携带当前local_read_positions从第一页重新查询 |
 | 413 PARTITION_TOO_LARGE | 不返回部分records；给建议跨度/区间，客户端自行拆分 |
 | 422 OBJECT_TOO_LARGE | 单对象违反硬限，停止并修复，不无限拆分 |
-| 422 OPERATION_NOT_SUPPORTED | 当前 Scope 不支持该业务操作，包括客户端写入长期记忆 |
+| 422 OPERATION_NOT_SUPPORTED | 当前Scope或task_type不支持该业务操作，包括客户端写入长期记忆、未支持的多模态任务类型或功能尚未部署启用；不表示任务已经接受 |
+| 409 MULTIMODAL_REQUEST_IN_PROGRESS | 原请求正在形成决策，按retry_after_ms重试同reply ID，不本地接管 |
+| 409 MULTIMODAL_INPUT_ALREADY_DECIDED | 恢复details中的canonical_reply_message_id及可选task_id，不能对同输入换ID重新检索 |
+| 410 MULTIMODAL_REQUEST_EXPIRED | 服务端已持久确认未建任务且本轮到期；可按当前有效输入生成普通回复，使用新的普通消息ID |
+| 503 POST_RETRIEVAL_FAILED | 原post检索尚无决定，重试原业务请求；不能当作matched=false或任务failed |
+| 200 + TaskState failed | 业务任务终止；MULTIMODAL_TASK_EXPIRED或MULTIMODAL_GENERATION_FAILED可接管，post失效等原因按12.5处理；不得重建同轮任务 |
 | 429 RATE_LIMITED / 503 TEMPORARY_SERVER_ERROR | 按 `retry_after_ms` 有界退避。读源落后时保留当前读取进度。消息创建结果未知时重试原冻结消息 ID 和正文，人设请求版本按当前会话重新获取 |
