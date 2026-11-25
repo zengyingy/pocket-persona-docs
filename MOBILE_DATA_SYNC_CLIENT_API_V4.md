@@ -6,7 +6,9 @@
 
 首条亲密度消息与卡片主题修订（2026-11-25，用户确认，代码已接入）：当正式消息的外层 `object_seq="1"` 且原触发类型为 `intimacy_level_up` 时，所有消息查询仍返回正文，但 `proactive_context` 必填且为 `null`，客户端不展示该消息的卡片；其他亲密度消息返回含必填 `theme_key` 的完整七字段结构，`schema_version` 保持整数 `1`。post五字段分支不变。因尚未正式上线，旧亲密度数据在上线前隔离补齐，并清理测试客户端消息缓存及读取位置后重新全量读取，不保留缺少 `theme_key` 的旧六字段分支。详见2.2.1和5.5；本合同已接入服务端及联调工具代码，尚未执行真实数据库迁移或部署。
 
-会话列表展示字段修订（2026-11-24用户确认，2026-11-25代码接入）：`threads/query` 每项新增 `intimacy_level`、`avatar_url`、`nickname`，`latest_message` 新增原消息 `created_at_ms`。普通用户无已接受等级，或角色记录、头像、昵称缺失时过滤该会话并记录ERROR日志；演示账号等级固定LV2。数据库读取故障整次返回可重试503。固定列表分页先取片段再过滤、不补齐；列表等级只用于展示，不替代消息创建接口的版本快照。详见2.7及第3节；本修订覆盖旧的“不扩展会话列表”约定。角色源配置见服务端S3；尚未执行真实源库验收或部署。
+会话列表亲密度类型修订（2026-11-25，用户确认）：`threads[].intimacy_level` 改为JSON整数，范围2～9223372036854775807，例如 `2`、`10`，不带LV前缀或引号。普通用户仍取本服务最后接受的等级，演示账号固定整数 `2`；消息创建接口的 `intimacy_score.data.level` 和主动消息的 `proactive_context.intimacy_level` 仍使用原有LV字符串格式。
+
+会话列表展示字段修订（2026-11-24用户确认，2026-11-25代码接入）：`threads/query` 每项新增 `intimacy_level`、`avatar_url`、`nickname`，`latest_message` 新增原消息 `created_at_ms`。普通用户无已接受等级，或角色记录、头像、昵称缺失时过滤该会话并记录ERROR日志；演示账号等级固定整数2。数据库读取故障整次返回可重试503。固定列表分页先取片段再过滤、不补齐；列表等级只用于展示，不替代消息创建接口的版本快照。详见2.7及第3节；本修订覆盖旧的“不扩展会话列表”约定。角色源配置见服务端S3；尚未执行真实源库验收或部署。
 
 post链接客户端确认写入修订（2026-11-24，用户确认，代码已接入）：最新合同为 `client-commit-v3`，替代此前仅设计的aggregate-v2。创建只提交未同步聊天的整合content和稳定reply_message_id，不要求来源消息ID、版本或客户端messages Epoch。服务端只检索并生成候选，状态generated表示等待客户端上传；客户端将原回复与proactive_context经messages:batchCreate提交，generated候选按客户端业务已发布处理，后续取消、post/Memory失效或占用变化不阻止原消息同步；正式事务成功后任务才completed，post才永久记为已链接。最终生成直接使用原content、人设、post和可选Memory，不读取服务端近期聊天；摘要仅用于检索。生成默认300秒、单次回复模型120秒，生成成功后不设上传截止时间，未上传就持续保留候选及post占用，后续检索排除该post。响应不增加客户端动作字段，仅在错误码表增加“客户端动作”列。代码、运行Schema、Prompt和联调工具已按本合同更新；未执行实际数据库迁移或部署，验证记录见SERVER_IMPLEMENTATION.md。
 
@@ -236,7 +238,7 @@ post在客户端收到generated后按业务已发布处理；batchCreate负责�
 
 两个快照独立处理，均通过消息创建回包获取。`sync-state`不提供亲密度查询参数或快照，`read-batches`、`records:query`及`messages:batchGet`只读取其指定的同步业务对象，不另附当前亲密度快照。没有新消息时不构造假消息或空`messages`批次获取快照。`persona_features`由服务端组装，独立提取的语言、展示名和媒体属性有各自的用途。端侧生成时，按固定键顺序遍历快照的顶层字段，逐项拼接为`key: value`。字符串直接使用，其余值用JSON表示。
 
-上述版本化亲密度快照仅应用到当前账号、角色、会话实例和已确认的消息 Epoch，保存在会话内存。会话重进、进程重启或确认消息 Epoch 变化后清空，无快照时请求版本用 `"0"`。第3节的列表 `intimacy_level` 没有版本，仅用于列表展示，不能据此构造或更新Session内的 `intimacy_score`，也不能改变上传时的 `intimacy_score_version`。
+上述版本化亲密度快照仅应用到当前账号、角色、会话实例和已确认的消息 Epoch，保存在会话内存。会话重进、进程重启或确认消息 Epoch 变化后清空，无快照时请求版本用 `"0"`。第3节的列表 `intimacy_level` 是没有版本的JSON整数，仅用于列表展示，不能据此构造或更新Session内的 `intimacy_score`，也不能改变上传时的 `intimacy_score_version`。
 
 ### 2.7 LatestMessage：会话列表预览
 
@@ -295,7 +297,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `has_more` | boolean | 必填 | 本轮固定会话ID集合是否还有后续片段；应与next_page_token是否为null一致，不按本页过滤后的返回条数判断。 |
 | `threads` | 对象数组 | 必填，可为[] | 本页过滤缺失数据后的会话状态；不包含该会话的全部聊天记录。即使为[]，has_more仍可能为true。 |
 | `threads[].role_id` | ID | 必填 | 对聊网红ID，用于本地会话去重和路由。 |
-| `threads[].intimacy_level` | 字符串 | 每个返回会话必填 | 普通用户为本服务最后接受的等级，格式为LV加无前导零的正整数，至少LV2，例如 `"LV2"`、`"LV10"`。ios-demo-test/zyy固定 `"LV2"`。只用于列表展示，无版本；普通用户无已接受等级时整个会话不返回。 |
+| `threads[].intimacy_level` | JSON整数 | 每个返回会话必填 | 普通用户为本服务最后接受的等级数值，范围2～9223372036854775807，例如 `2`、`10`；不返回LV前缀、数字字符串或浮点数。ios-demo-test/zyy固定整数 `2`。只用于列表展示，无版本；普通用户无已接受等级时整个会话不返回。 |
 | `threads[].avatar_url` | 非空字符串 | 每个返回会话必填 | 外部roles记录的avatar_url，按user_pk=role_id查询；不回退内部角色资料。缺失或空值时整个会话不返回。 |
 | `threads[].nickname` | 非空字符串 | 每个返回会话必填 | 同一外部roles记录的nickname；不以内部display_name替代。缺失或空值时整个会话不返回。 |
 | `threads[].thread_revision` | UInt64String | 必填 | 当前服务端会话内容/预览版本。同messages Epoch内比较，不代表用户阅读进度，也不覆盖独立亲密度或外部角色展示资料的变化。 |
@@ -338,7 +340,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
   "threads": [
     {
       "role_id": "role_1",
-      "intimacy_level": "LV3",
+      "intimacy_level": 3,
       "avatar_url": "https://cdn.example.com/roles/role_1.png",
       "nickname": "小夏",
       "thread_revision": "105",
