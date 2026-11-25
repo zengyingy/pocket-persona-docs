@@ -4,6 +4,8 @@
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
+会话列表展示字段修订（2026-11-24，用户确认，本次仅更新文档，代码尚未实现）：`threads/query` 每项新增 `intimacy_level`、`avatar_url`、`nickname`，`latest_message` 新增原消息 `created_at_ms`。普通用户无已接受等级，或角色记录、头像、昵称缺失时过滤该会话并记录ERROR日志；演示账号等级固定LV2。数据库读取故障整次返回可重试503。固定列表分页先取片段再过滤、不补齐；列表等级只用于展示，不替代消息创建接口的版本快照。详见2.7及第3节；本修订覆盖旧的“不扩展会话列表”约定。
+
 post链接客户端确认写入修订（2026-11-24，用户确认，代码已接入）：最新合同为 `client-commit-v3`，替代此前仅设计的aggregate-v2。创建只提交未同步聊天的整合content和稳定reply_message_id，不要求来源消息ID、版本或客户端messages Epoch。服务端只检索并生成候选，状态generated表示等待客户端上传；客户端将原回复与proactive_context经messages:batchCreate提交，generated候选按客户端业务已发布处理，后续取消、post/Memory失效或占用变化不阻止原消息同步；正式事务成功后任务才completed，post才永久记为已链接。最终生成直接使用原content、人设、post和可选Memory，不读取服务端近期聊天；摘要仅用于检索。生成默认300秒、单次回复模型120秒，生成成功后不设上传截止时间，未上传就持续保留候选及post占用，后续检索排除该post。响应不增加客户端动作字段，仅在错误码表增加“客户端动作”列。代码、运行Schema、Prompt和联调工具已按本合同更新；未执行实际数据库迁移或部署，验证记录见SERVER_IMPLEMENTATION.md。
 
 历史实现边界（2026-11-23）：旧单消息message-v1已实现并离线验证，MULTIMODAL_ENABLED默认false；它由服务端正式发布消息。旧请求/任务按12.6恢复，不能拿旧已发布消息当作新候选再次上传。aggregate-v2从未实现，不产生需要迁移的运行记录；client-commit-v3代码已更新，新客户端须在目标环境完成兼容迁移与部署后切换。
@@ -12,7 +14,7 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 
 | 方法与路径 | 用途 |
 |---|---|
-| POST /auto-media/api/chat/threads/query | 会话列表、预览及本机阅读基准下的未读数 |
+| POST /auto-media/api/chat/threads/query | 会话列表、当前亲密度等级、角色头像与昵称、最新消息预览及创建时间、本机阅读基准下的未读数 |
 | GET /auto-media/api/chat/roles/{role_id}/sync-state | 可选轻量探测，不是同步读取前置步骤 |
 | POST /auto-media/api/chat/roles/{role_id}/messages:batchCreate | 幂等创建用户/端侧消息，或校验并提交post候选回复；按独立版本回传人设和亲密度 |
 | POST /auto-media/api/chat/roles/{role_id}/messages:batchGet | 按消息 ID 批量查询当前会话的有效消息正文 |
@@ -227,11 +229,11 @@ post在客户端收到generated后按业务已发布处理；batchCreate负责�
 
 两个快照独立处理，均通过消息创建回包获取。`sync-state`不提供亲密度查询参数或快照，`read-batches`、`records:query`及`messages:batchGet`只读取其指定的同步业务对象，不另附当前亲密度快照。没有新消息时不构造假消息或空`messages`批次获取快照。`persona_features`由服务端组装，独立提取的语言、展示名和媒体属性有各自的用途。端侧生成时，按固定键顺序遍历快照的顶层字段，逐项拼接为`key: value`。字符串直接使用，其余值用JSON表示。
 
-亲密度仅应用到当前账号、角色、会话实例和已确认的消息 Epoch，保存在会话内存。会话重进、进程重启或确认消息 Epoch 变化后清空，无快照时请求版本用 `"0"`。
+上述版本化亲密度快照仅应用到当前账号、角色、会话实例和已确认的消息 Epoch，保存在会话内存。会话重进、进程重启或确认消息 Epoch 变化后清空，无快照时请求版本用 `"0"`。第3节的列表 `intimacy_level` 没有版本，仅用于列表展示，不能据此构造或更新Session内的 `intimacy_score`，也不能改变上传时的 `intimacy_score_version`。
 
 ### 2.7 LatestMessage：会话列表预览
 
-列表项的`latest_message`仅用于预览。没有有效消息时整个字段为null；存在时使用以下固定五个字段，不替代完整MessageContent或完整区间读取。
+列表项的`latest_message`仅用于预览。没有有效消息时整个字段为null；存在时使用以下固定六个字段，不替代完整MessageContent或完整区间读取。
 
 | 字段 | 类型 | 必填条件 | 含义及来源规则 |
 |---|---|---|---|
@@ -240,8 +242,9 @@ post在客户端收到generated后按业务已发布处理；batchCreate负责�
 | `sender_id` | `ID` | latest_message非null时必填 | 最新消息实际发送者ID，与sender_type及所属会话对应。 |
 | `message_type` | 字符串枚举 | latest_message非null时必填 | 最新消息的类型：`text`、`image`、`audio`、`video`或`mixed`。 |
 | `preview` | 字符串 | latest_message非null时必填 | 服务端生成的列表展示摘要；可为截断文本或媒体展示说明。不是完整消息正文，不能凭它建立本地权威消息或推进已读/cursor。 |
+| `created_at_ms` | `TimestampMs` | latest_message非null时必填 | 该最新有效消息原始的 `MessageContent.created_at_ms`，为非负JSON整数；不是 `server_created_at_ms`、会话创建时间或本次响应时间。 |
 
-`LatestMessage`不额外包含`object_seq`、完整body或向量。最新消息ID不变也可能发生旧消息删除，变化检查仍须读取Scope的sync_seq提示。
+最新有效消息按当前messages Epoch内最大的有效 `object_seq` 选择，不按 `created_at_ms` 最大值选择；删除尾部消息后，其预览和创建时间一起回退到更早的有效消息。列表仍按服务端最后活动时间降序、role_id二进制升序排列，不按新展示时间重排。`LatestMessage`不额外包含`object_seq`、完整body或向量。最新消息ID不变也可能发生旧消息删除，变化检查仍须读取Scope的sync_seq提示。
 
 ### 2.8 不透明业务对象的边界
 
@@ -270,7 +273,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 | 字段路径 | 类型 | 必填/默认值 | 含义与使用规则 |
 |---|---|---|---|
-| `page_size` | Count | 可省略，默认20；1～100 | 本页最多返回多少个会话，不是每个会话的消息条数。分页过程中保持不变。 |
+| `page_size` | Count | 可省略，默认20；1～100 | 本页从固定会话集合中取出的ID片段大小，不是每个会话的消息条数。缺失数据过滤后不补齐，实际返回数可以更少。分页过程中保持不变。 |
 | `page_token` | PageToken | 首次省略或null；续页必填 | 服务端上一次返回的next_page_token，绑定本轮固定线程ID集合和顺序。已签发的标识或其绑定集合过期、被回收时返回410 PAGE_TOKEN_EXPIRED；格式错误、被篡改或与分页参数不匹配时返回400 INVALID_ARGUMENT。 |
 | `local_read_positions` | 对象数组 | 可省略，默认[] | 本设备各会话已读位置。可以携带多于本页的会话；同一role_id最多一项。没有对应项时按未知阅读状态处理。 |
 | `local_read_positions[].role_id` | ID | 每项必填 | 本条阅读位置属于哪个网红会话，不是当前消息发送者。 |
@@ -282,19 +285,24 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | 字段路径 | 类型 | 出现条件 | 含义与使用规则 |
 |---|---|---|---|
 | `next_page_token` | PageToken | 必填 | 下一页标识；没有下一页时null。它不推进任何Scope的cursor。 |
-| `has_more` | boolean | 必填 | 本轮固定会话集合是否还有下一页；应与next_page_token是否为null一致。 |
-| `threads` | 对象数组 | 必填，可为[] | 本页会话状态；不包含该会话的全部聊天记录。 |
+| `has_more` | boolean | 必填 | 本轮固定会话ID集合是否还有后续片段；应与next_page_token是否为null一致，不按本页过滤后的返回条数判断。 |
+| `threads` | 对象数组 | 必填，可为[] | 本页过滤缺失数据后的会话状态；不包含该会话的全部聊天记录。即使为[]，has_more仍可能为true。 |
 | `threads[].role_id` | ID | 必填 | 对聊网红ID，用于本地会话去重和路由。 |
-| `threads[].thread_revision` | UInt64String | 必填 | 当前服务端会话内容/预览版本。同messages Epoch内比较，不代表用户阅读进度。 |
+| `threads[].intimacy_level` | 字符串 | 每个返回会话必填 | 普通用户为本服务最后接受的等级，格式为LV加无前导零的正整数，至少LV2，例如 `"LV2"`、`"LV10"`。ios-demo-test/zyy固定 `"LV2"`。只用于列表展示，无版本；普通用户无已接受等级时整个会话不返回。 |
+| `threads[].avatar_url` | 非空字符串 | 每个返回会话必填 | 外部roles记录的avatar_url，按user_pk=role_id查询；不回退内部角色资料。缺失或空值时整个会话不返回。 |
+| `threads[].nickname` | 非空字符串 | 每个返回会话必填 | 同一外部roles记录的nickname；不以内部display_name替代。缺失或空值时整个会话不返回。 |
+| `threads[].thread_revision` | UInt64String | 必填 | 当前服务端会话内容/预览版本。同messages Epoch内比较，不代表用户阅读进度，也不覆盖独立亲密度或外部角色展示资料的变化。 |
 | `threads[].messages_sync_epoch` | OpaqueString | 必填 | 本条会话及其消息序号所属代次，供缓存和本地阅读状态匹配。 |
 | `threads[].current_object_seq` | UInt64String | 必填 | 已分配过的最大消息创建序号。删除不回退，也不等于最新有效消息序号。 |
 | `threads[].unread_basis_object_seq` | UInt64String | 必填 | 服务端本次实际用于计数的请求阅读基准；无状态或旧Epoch时为"0"。 |
 | `threads[].unread_count` | Count | 必填 | 当前有效网红消息中object_seq大于本次计数基准的条数。用户消息、墓碑不计入。 |
 | `threads[].reset_read_position` | boolean | 必填 | 是否需要按当前messages Epoch重建本机阅读位置；本轮请求Epoch缺失或不同则为true。 |
-| `threads[].latest_message` | LatestMessage或null | 必填 | 最新有效消息的展示预览；全部消息已删或会话无有效消息时null。五个内部字段见2。不能据预览推进cursor或标读。 |
+| `threads[].latest_message` | LatestMessage或null | 必填 | 最新有效消息的展示预览；全部消息已删或会话无有效消息时null。含created_at_ms的六个内部字段见2.7。不能据预览推进cursor或标读。 |
 | `threads[].sync_hints` | SyncHint数组 | 必填，可为[] | 对应会话各Scope的变化提示；结构字段见2。提示只用于安排读取任务。 |
 
 只有回包的messages Epoch、计数基准和本机当前阅读基准匹配时，才考虑采纳unread_count；还需过滤过时thread_revision。不能仅比较列表版本，因为相同内容版本可以因请求阅读位置不同而得到不同计数。
+
+`intimacy_level`、`avatar_url`、`nickname` 按本次有效查询的结果刷新。它们可以在 `thread_revision` 不变时变化，客户端不能仅因版本相同就忽略这些展示字段；仍须隔离旧账号、旧分页轮次和迟到请求的响应。列表等级不带 `intimacy_score` 或版本，也不初始化或更新2.6/5.4的Session快照。
 
 `POST /auto-media/api/chat/threads/query`，本次请求的 `X-Request-ID` 为 `req_threads_1`。请求正文如下。
 
@@ -323,6 +331,9 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
   "threads": [
     {
       "role_id": "role_1",
+      "intimacy_level": "LV3",
+      "avatar_url": "https://cdn.example.com/roles/role_1.png",
+      "nickname": "小夏",
       "thread_revision": "105",
       "messages_sync_epoch": "msg-e1",
       "current_object_seq": "100",
@@ -334,7 +345,8 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
         "sender_type": "role",
         "sender_id": "role_1",
         "message_type": "text",
-        "preview": "明天见"
+        "preview": "明天见",
+        "created_at_ms": 1793669999960
       },
       "sync_hints": [
         {
@@ -395,9 +407,9 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `role_id` | ID | 必填 | 本状态所属会话，与路径一致。 |
 | `scopes` | SyncHint数组 | 必填 | `messages` 和 `memories` 各一项，按 `scope` 识别。每项字段见 2.5。 |
 | `current_object_seq` | UInt64String | 必填 | 当前会话的消息创建高水位，不包含额外阅读信息。 |
-| `thread_revision` | UInt64String | 必填 | 会话展示状态版本，用于发现列表内容变化。 |
+| `thread_revision` | UInt64String | 必填 | 会话内容/预览版本，用于发现聊天内容变化；不覆盖列表亲密度、头像或昵称的独立变化。 |
 
-位置字段只用于发现变化。本接口是可选探测，客户端也可以直接调用read-batches。本次亲密度功能不扩展此接口，不接受`intimacy_score_version`查询参数，也不返回`intimacy_score`；亲密度仅按第5节在`messages:batchCreate`回包中交付。
+位置字段只用于发现变化。本接口是可选探测，客户端也可以直接调用read-batches。本次亲密度功能不扩展此接口，不接受`intimacy_score_version`查询参数，也不返回`intimacy_score`或`intimacy_level`；版本快照按第5节在`messages:batchCreate`回包中交付，列表展示等级另见第3节。
 
 `GET /auto-media/api/chat/roles/role_1/sync-state`，本次请求的 `X-Request-ID` 为 `req_state_1`。无请求正文。
 
@@ -644,7 +656,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 当前亲密度快照与主动消息的历史触发信息分别处理。普通用户例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；演示账号仍返回固定版本1、LV2。消息中的`proactive_context.intimacy_level`保持真实触发时的等级。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
 
-本期只通过`messages:batchCreate`获取该快照，不增加独立读取接口，不扩展`sync-state`、会话列表或Scope读取回包。接口仍要求至少一条真实合法消息，无上传消息时不调用空批次，也不通过同步到一条主动消息推导当前等级。
+版本化 `intimacy_score` 快照仍只通过`messages:batchCreate`获取，不增加独立读取接口，不扩展`sync-state`或Scope读取回包。第3节的会话列表另返回仅供展示的 `intimacy_level`，不携带版本、不能替代本节的会话快照；普通用户无已接受等级时，batchCreate省略快照，列表则过滤整个会话。batchCreate仍要求至少一条真实合法消息，无上传消息时不调用空批次，也不通过同步到一条主动消息推导当前等级。
 
 ### 5.5 亲密度主动消息下行示例
 
