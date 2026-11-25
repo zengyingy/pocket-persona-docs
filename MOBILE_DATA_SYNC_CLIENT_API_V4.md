@@ -1,10 +1,12 @@
 # V4 客户端接口文档
 
-适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-24。
+适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-25。
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
-会话列表展示字段修订（2026-11-24，用户确认，本次仅更新文档，代码尚未实现）：`threads/query` 每项新增 `intimacy_level`、`avatar_url`、`nickname`，`latest_message` 新增原消息 `created_at_ms`。普通用户无已接受等级，或角色记录、头像、昵称缺失时过滤该会话并记录ERROR日志；演示账号等级固定LV2。数据库读取故障整次返回可重试503。固定列表分页先取片段再过滤、不补齐；列表等级只用于展示，不替代消息创建接口的版本快照。详见2.7及第3节；本修订覆盖旧的“不扩展会话列表”约定。
+首条亲密度消息与卡片主题修订（2026-11-25，用户确认，代码已接入）：当正式消息的外层 `object_seq="1"` 且原触发类型为 `intimacy_level_up` 时，所有消息查询仍返回正文，但 `proactive_context` 必填且为 `null`，客户端不展示该消息的卡片；其他亲密度消息返回含必填 `theme_key` 的完整七字段结构，`schema_version` 保持整数 `1`。post五字段分支不变。因尚未正式上线，旧亲密度数据在上线前隔离补齐，并清理测试客户端消息缓存及读取位置后重新全量读取，不保留缺少 `theme_key` 的旧六字段分支。详见2.2.1和5.5；本合同已接入服务端及联调工具代码，尚未执行真实数据库迁移或部署。
+
+会话列表展示字段修订（2026-11-24用户确认，2026-11-25代码接入）：`threads/query` 每项新增 `intimacy_level`、`avatar_url`、`nickname`，`latest_message` 新增原消息 `created_at_ms`。普通用户无已接受等级，或角色记录、头像、昵称缺失时过滤该会话并记录ERROR日志；演示账号等级固定LV2。数据库读取故障整次返回可重试503。固定列表分页先取片段再过滤、不补齐；列表等级只用于展示，不替代消息创建接口的版本快照。详见2.7及第3节；本修订覆盖旧的“不扩展会话列表”约定。角色源配置见服务端S3；尚未执行真实源库验收或部署。
 
 post链接客户端确认写入修订（2026-11-24，用户确认，代码已接入）：最新合同为 `client-commit-v3`，替代此前仅设计的aggregate-v2。创建只提交未同步聊天的整合content和稳定reply_message_id，不要求来源消息ID、版本或客户端messages Epoch。服务端只检索并生成候选，状态generated表示等待客户端上传；客户端将原回复与proactive_context经messages:batchCreate提交，generated候选按客户端业务已发布处理，后续取消、post/Memory失效或占用变化不阻止原消息同步；正式事务成功后任务才completed，post才永久记为已链接。最终生成直接使用原content、人设、post和可选Memory，不读取服务端近期聊天；摘要仅用于检索。生成默认300秒、单次回复模型120秒，生成成功后不设上传截止时间，未上传就持续保留候选及post占用，后续检索排除该post。响应不增加客户端动作字段，仅在错误码表增加“客户端动作”列。代码、运行Schema、Prompt和联调工具已按本合同更新；未执行实际数据库迁移或部署，验证记录见SERVER_IMPLEMENTATION.md。
 
@@ -119,13 +121,13 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `sender_id` | `ID` | 必填 | user时必须等于认证用户ID，role时必须等于当前会话`role_id`。由生成端提供、服务端按权限及发送者类型校验。 |
 | `origin` | 字符串枚举 | 必填 | 服务端确认的生成来源：普通user为client_user、普通role为client_llm；亲密度主动消息为server_llm；通过任务绑定校验后经batchCreate提交的post回复为server_multimodal。客户端不能上传origin，也不能凭一个自造proactive_context选择服务端来源。 |
 | `reply_to_message_id` | `ID`或`null` | 字段必填，可为null | 新客户端user/role消息、亲密度主动消息及client-commit-v3的post回复均为null；未同步content没有明确消息ID，服务端不猜测最近用户消息。旧message-v1已记录的明确关联保留，不改写历史消息；客户端创建请求不传该字段。 |
-| `proactive_context` | `ProactiveContextV1`或`null` | 已确认下行必填，可为null；post候选上传时必填非null | 亲密度或post引用信息，见2.2.1。普通消息为null；客户端只可在batchCreate中原样回传已绑定任务的post分支，不能自造或上传亲密度分支。 |
+| `proactive_context` | `ProactiveContextV1`或`null` | 已确认下行必填，可为null；post候选上传时必填非null | 亲密度或post引用信息，见2.2.1。普通消息及外层object_seq="1"的亲密度升级消息下行为null，其余亲密度消息为含theme_key的完整七字段结构；post保持原五字段结构。客户端只可在batchCreate中原样回传已绑定任务的post分支，不能自造或上传亲密度分支。 |
 | `message_type` | 字符串枚举 | 必填 | 协议枚举为`text`、`image`、`audio`、`video`或`mixed`，必须与body一致；当前`post_link`回复固定为`text`，不会复制post媒体到聊天附件。 |
 | `body` | 对象，见2.3 | 必填 | 文本及媒体附件的完整内容容器。至少有非空文本或一个有效附件。 |
 | `created_at_ms` | `TimestampMs` | 必填 | 生成端确定的展示时间。client-commit-v3 post回复使用服务端候选冻结的generated_at_ms，上传原样携带；server_created_at_ms是实际入库时间，两者可不同。亲密度仍按正式发布时间规则；重试时间不变，排序用object_seq。 |
 | `server_created_at_ms` | `TimestampMs` | 已确认下行必填；创建请求不传 | 服务端首次接受消息的时间。幂等重试返回首次值，不用本次回包时间替代。 |
 
-发送者、来源、回复关联、主动消息触发信息、首次时间和稳定消息顺序在创建后不可改。本版messages不提供update；删除只作用于选中消息，已存在的回复保留。
+发送者、来源、回复关联、主动消息触发信息、首次时间和稳定消息顺序在创建后不可改。本版messages不提供update；删除只作用于选中消息，已存在的回复保留。5.5节的上线前隔离补齐theme_key是一次性数据修复例外，不开放运行中的消息编辑。
 
 消息对象的创建位置不属于MessageContent：SyncRecord、创建回执及TaskState均在其外层返回object_seq，避免正文重复元数据。
 
@@ -133,7 +135,7 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 
 非null结构是按`trigger_type`判别的联合类型，`schema_version`均固定为JSON整数`1`。必须完整匹配下列一个分支，每个分支内的字段全部必填，不混用字段，也不增加未定义字段。客户端不得自行构造这些服务端元数据；仅允许按第5.6节将任务返回的post分支原样回传，亲密度分支仍不接受客户端上传。
 
-亲密度等级提升分支保持原有结构：
+亲密度等级提升分支严格包含以下七个字段，schema_version仍为1；上线前完成存量补齐后，不再接受缺少theme_key的六字段结构：
 
 | 字段 | 类型 | 含义与校验规则 |
 |---|---|---|
@@ -142,7 +144,8 @@ delete仅返回`object_id`、`sync_seq`、`operation`，不返回旧正文、向
 | `intimacy_level` | 字符串 | 本条消息对应的触发等级，格式为`LV`加无前导零的正整数，当前必须至少为`LV2`。按数字部分解释等级，不按整个字符串比较大小。 |
 | `moment_id` | `ID` | 生成该等级卡片的任务`task_id`。该字段不是聊天生成任务ID，也不是消息ID。 |
 | `card_id` | `ID` | 上述任务的`published_card_id`，对应实际采用的`current_result.cards[].card_id`。 |
-| `link_type` | 字符串枚举 | 固定`intimacy_card`，表示亲密度卡片链接类型。客户端结合`moment_id`、`card_id`识别卡片跳转目标。 |
+| `theme_key` | 字符串 | 冻结自所用卡片源theme_tasks任务的顶层theme_key；必须至少含一个非空白字符，原样保存和返回，不trim、不作Unicode归一化，不按ID或数字解析。该字段不是theme_snapshot内字段，也不由客户端或模型生成。 |
+| `link_type` | 字符串枚举 | 固定`intimacy_card`，表示亲密度卡片链接类型。客户端结合`theme_key`、`moment_id`、`card_id`处理卡片展示与跳转目标。 |
 
 post链接分支只包含以下五个字段：
 
@@ -158,15 +161,19 @@ client-commit-v3正式post回复满足sender_type=role、sender_id=role_id、ori
 
 `trigger_type`表示触发原因，`link_type`表示关联内容的链接类型。以下关于等级、卡片、串行和无限请求重试的规则只适用于`intimacy_level_up`；post链接任务遵循第12节的有限重试和有效期。
 
-亲密度主动消息满足`sender_type="role"`、`sender_id=role_id`、`origin="server_llm"`、`reply_to_message_id=null`、`message_type="text"`，并包含非null的上述结构。消息语言使用生成时冻结的网红`default_language`；生成结合角色人设、卡片文案和最近聊天，不召回长期记忆。
+亲密度主动消息满足`sender_type="role"`、`sender_id=role_id`、`origin="server_llm"`、`reply_to_message_id=null`、`message_type="text"`。有效亲密度消息在服务端数据库中保存完整七字段触发信息，并先校验完整存储记录，再按下述规则组装下行；客户端不能因origin=server_llm而把proactive_context=null判为非法。消息语言使用生成时冻结的网红`default_language`；生成结合角色人设、卡片文案和最近聊天，不召回长期记忆。theme_key仅作为冻结的卡片展示元数据，不进入模型Prompt。
+
+首条判断严格取当前用户×角色messages正式创建顺序的外层object_seq：只有object_seq="1"且原proactive_context.trigger_type="intimacy_level_up"时，下行proactive_context=null，字段不省略；首次接受当前等级后的补发同样适用，不限于LV2。object_seq>1的亲密度消息返回完整七字段结构。首条被删除后不会将下一条可见消息改判为首条；普通消息及post消息不因object_seq="1"改变原有上下文规则。此规则只控制卡片展示，正文、消息身份、创建与同步序号、会话预览、未读计数和记忆处理均沿用原规则。
+
+查询卡片源时，theme_key缺失、null、非字符串、空字符串或纯空白字符串均按CARD_NOT_READY处理，沿用既有有限卡片业务重试；不能填空值、用其他字段替代或跳过该校验。非null的亲密度下行分支必须完整通过七字段校验，客户端不能补造theme_key或合成上下文。
 
 每个用户与网红的组合，每个等级最多发送一次；首次接入已为LV5时只补发LV5，随后从LV5升到LV8时依次补发LV6、LV7、LV8。同一组合先完成低等级消息生成与正式发布，才生成高等级消息；在同一messages Epoch内，低等级已发送消息的`object_seq`严格小于高等级，`created_at_ms`和`server_created_at_ms`也严格递增。不同`(user_id, role_id)`组合可以并行；同一用户与不同网红也属于不同组合。
 
-低等级等待重试期间，高等级继续等待。卡片异常或模型成功返回后内容解析、结构校验失败会消耗重试次数；耗尽后该等级永久跳过，其后等级继续处理。模型请求失败不消耗次数并持续退避重试，不能把成功返回的无效内容归类为请求失败。消息提交到业务数据库即视为已发送，不设置发送有效期；删除消息不会重新触发该等级。`link_type`、`moment_id`、`card_id`和触发等级保留发布时信息，卡片后续撤回或更新不改写旧消息。具体失败分类、次数及恢复规则见服务端完整设计。
+低等级等待重试期间，高等级继续等待。卡片异常或模型成功返回后内容解析、结构校验失败会消耗重试次数；耗尽后该等级永久跳过，其后等级继续处理。模型请求失败不消耗次数并持续退避重试，不能把成功返回的无效内容归类为请求失败。消息提交到业务数据库即视为已发送，不设置发送有效期；删除消息不会重新触发该等级。`link_type`、`theme_key`、`moment_id`、`card_id`和触发等级保留发布时信息，卡片后续撤回或更新不改写旧消息。具体失败分类、次数及恢复规则见服务端完整设计。
 
 post在客户端收到generated后按业务已发布处理；batchCreate负责正式同步入库，成功后才将服务端去重状态转sent，按用户、角色、post永久去重。generated阶段持续保留占用，后续取消、post/Memory失效、占用变化或未上传时长均不撤销原候选的同步资格；占用异常可在正式上传事务内按固定task/post绑定修复。内部目标messages Epoch/G变化的会话重置边界另见12.5。删除已提交回复、清理墓碑或切换Epoch不允许再次链接已sent的post。
 
-本结构是消息正文的一部分，随messages的普通区间、`inline_result.records[]`和`messages:batchGet`一致返回，客户端与整条消息一同保存。删除墓碑仍严格只有`object_id`、`sync_seq`、`operation`，不携带本结构。`latest_message`继续只提供预览字段，不能据其推断触发信息。客户端messages:batchCreate仅能按任务绑定原样回传post的proactive_context，不能上传origin或自造亲密度分支。proactive_context不是metadata.context_provenance，不代替生成来源声明。
+本字段随完整消息一同保存。messages的recent/history/full/incremental区间、read-batches的`inline_result.records[]`和`messages:batchGet`对同一消息应用相同下行规则，首条亲密度消息均返回null，其他亲密度消息均返回完整七字段结构。客户端应用有效权威记录时完整替换上下文，收到null须清除该消息原有的卡片展示状态；不能将null当作字段缺省而保留旧卡片，也不能依据origin、当前等级或后续消息合成上下文。删除墓碑仍严格只有`object_id`、`sync_seq`、`operation`，不携带本结构。`latest_message`继续只提供预览字段，不能据其推断触发信息。客户端messages:batchCreate仅能按任务绑定原样回传post的proactive_context，不能上传origin或自造亲密度分支。proactive_context不是metadata.context_provenance，不代替生成来源声明。
 
 ### 2.3 MessageBody与Attachment
 
@@ -654,13 +661,13 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 普通用户动态亲密度状态读取暂时失败时返回可重试HTTP 503，消息可能已经提交；客户端用原`message_id`和冻结消息内容重试，并从当前会话重新取人设、亲密度请求版本。演示账号跳过该亲密度读取，其他消息/人设依赖错误仍正常处理。后台补传没有匹配活动会话时只处理消息回执，不把快照写入其他会话。源库监测故障不等于本地记录消失，已接受值继续有效。
 
-当前亲密度快照与主动消息的历史触发信息分别处理。普通用户例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；演示账号仍返回固定版本1、LV2。消息中的`proactive_context.intimacy_level`保持真实触发时的等级。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
+当前亲密度快照与主动消息的历史触发信息分别处理。普通用户例如本服务已接受LV5、版本`"2"`，正在按顺序补发LV3和LV4，回包仍返回LV5；演示账号仍返回固定版本1、LV2。非null消息上下文中的`proactive_context.intimacy_level`保持真实触发时的等级；首条亲密度消息的下行context为null，不通过其他字段补造历史等级。客户端不能用历史触发等级覆盖当前快照或推算亲密度版本。
 
 版本化 `intimacy_score` 快照仍只通过`messages:batchCreate`获取，不增加独立读取接口，不扩展`sync-state`或Scope读取回包。第3节的会话列表另返回仅供展示的 `intimacy_level`，不携带版本、不能替代本节的会话快照；普通用户无已接受等级时，batchCreate省略快照，列表则过滤整个会话。batchCreate仍要求至少一条真实合法消息，无上传消息时不调用空批次，也不通过同步到一条主动消息推导当前等级。
 
 ### 5.5 亲密度主动消息下行示例
 
-下面是通过messages普通区间、内联读取或`messages:batchGet`取得的一条完整`SyncRecord`示例。`moment_id`是卡片任务ID，`card_id`是实际发布卡片ID；它们不是读取任务或本消息的身份。
+下面是通过messages普通区间、内联读取或`messages:batchGet`取得的一条非首条亲密度消息的完整`SyncRecord`示例。`moment_id`是卡片任务ID，`card_id`是实际发布卡片ID，`theme_key`是所用源任务顶层冻结的主题字符串；它们不是读取任务或本消息的身份。
 
 ```json
 {
@@ -680,6 +687,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
       "intimacy_level": "LV3",
       "moment_id": "theme_task_lv3_01",
       "card_id": "published_card_lv3_01",
+      "theme_key": "closer_evening_lv3",
       "link_type": "intimacy_card"
     },
     "message_type": "text",
@@ -693,7 +701,43 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 }
 ```
 
-后续LV4消息正式发布后取得更大的`object_seq`，两个创建时间也分别大于这条LV3消息的对应时间。客户端仍以同步外层`object_seq`作为权威创建顺序，不能按等级重新编号，也不能因收到单条消息直接推进Scope游标。主动消息的历史元数据随正文保存和展示，当前亲密度快照仍只按5.4节获取。
+后续LV4消息正式发布后取得更大的`object_seq`，两个创建时间也分别大于这条LV3消息的对应时间。客户端仍以同步外层`object_seq`作为权威创建顺序，不能按等级重新编号，也不能因收到单条消息直接推进Scope游标。非null的历史元数据随正文保存，客户端据其展示卡片；当前亲密度快照仍只按5.4节获取。
+
+下面是另一个独立会话的首条消息示例。该关系首次接受的当前等级为LV5，服务端补发LV5消息且正式分配object_seq="1"；完整触发信息保存在数据库，所有查询下行均只将proactive_context置为null。客户端正常展示正文，不展示该消息的卡片。
+
+```json
+{
+  "object_id": "a544e25adb3b4c0ba10c25e1a8a4ce9b",
+  "object_seq": "1",
+  "sync_seq": "1",
+  "operation": "upsert",
+  "content": {
+    "message_id": "a544e25adb3b4c0ba10c25e1a8a4ce9b",
+    "sender_type": "role",
+    "sender_id": "role_1",
+    "origin": "server_llm",
+    "reply_to_message_id": null,
+    "proactive_context": null,
+    "message_type": "text",
+    "body": {
+      "text": "忽然很想和你分享今天的晚霞，你现在在做什么？",
+      "attachments": []
+    },
+    "created_at_ms": 1793670000000,
+    "server_created_at_ms": 1793670000000
+  }
+}
+```
+
+上线前一次性迁移：因尚未正式上线，亲密度schema_version保持1，不提供旧六字段兼容分支。维护期间先停止API、扫描器及worker，排空在途请求，再按原role_id、moment_id对应的theme_tasks.task_id和card_id核对原卡片，补齐已有有效亲密度消息及非null任务卡片快照的theme_key；不得按当前等级换卡或从其他任务拼出主题，缺失或不合法的映射须处理完后才能恢复服务。该隔离修复不改变object_seq、sync_seq或messages Epoch。测试客户端须在恢复后首次读取前清理旧消息缓存、同步游标、历史锚点并取消旧读取任务，未上传Outbox独立保留，随后重新完整读取；不能期待原游标之后的增量自动修复旧消息。正常运行后的消息仍遵守不可编辑和序号规则。
+
+本修订验收覆盖以下客户端行为；服务端完整迁移与发布校验以SERVER_DESIGN_FINAL.md为准：
+
+- 首条亲密度消息，包括首次接受LV5后的补发，在所有查询入口均返回proactive_context=null，正文、列表预览及未读计数照常。
+- 非首条亲密度消息完整返回七字段v1上下文；theme_key原样保存，缺字段或非法值不被当作合法非null上下文。
+- object_seq=1的普通消息、post消息及首条删除后的object_seq>1亲密度消息沿用各自规则，post仍为五字段v1。
+- 应用权威null时清除旧卡片状态，客户端接受首条server_llm消息的null上下文，不合成历史触发信息。
+- 上线前隔离补齐、测试缓存清理和完整重读完成后，再恢复正常增量；代码已接入，真实数据库迁移尚未执行。
 
 ### 5.6 服务端post候选的客户端确认写入
 
@@ -1630,7 +1674,7 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | `request_id` | ID | 必填 | 本次 HTTP 调用的追踪 ID。 |
 | `server_time_ms` | TimestampMs | 必填 | 本次响应生成时间。 |
 | `sync_epoch` | OpaqueString | 必填 | 本次读取的 messages 代次，适用于所有返回的序号。 |
-| `messages` | SyncRecord 数组 | 必填 | 仅返回当前会话中有权读取的有效消息，按请求 ID 的相对顺序排列。每项包含 object_id、object_seq、sync_seq、operation="upsert" 和完整 MessageContent，结构见 2。object_id 等于 content.message_id。已删除、未找到或不属于本会话的 ID 跳过。无匹配项时返回空数组。 |
+| `messages` | SyncRecord 数组 | 必填 | 仅返回当前会话中有权读取的有效消息，按请求 ID 的相对顺序排列。每项包含 object_id、object_seq、sync_seq、operation="upsert" 和完整 MessageContent，结构见 2；proactive_context适用2.2.1的首条置null规则，与区间和内联读取一致。object_id 等于 content.message_id。已删除、未找到或不属于本会话的 ID 跳过。无匹配项时返回空数组。 |
 
 参数校验失败返回 HTTP 400，成功返回 HTTP 200。客户端可用 object_id 关联结果。同步游标和已读位置保持原值。
 
