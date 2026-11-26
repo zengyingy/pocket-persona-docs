@@ -1,6 +1,8 @@
 # V4 客户端接口文档
 
-适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-25。
+适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-26。
+
+模型接口修订（2026-11-25确认，2026-11-26更新，仅设计未实现）：第16节规定 `chat`、`embedding` 模型查询、固定版本文件清单及并发Range下载/断点续传接口，支持iOS/Android。本次客户端embedding与服务端记忆模型独立，消息/记忆同步接口仍不携带模型协商字段，边界见第11节。
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
@@ -29,6 +31,10 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks | 按未同步content检索并生成post候选；不直接写消息（client-commit-v3） |
 | GET /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id} | 查询生成状态、待上传候选或已经正式提交的消息 |
 | POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}:cancel | 幂等取消业务生成任务 |
+| GET /auto-media/api/chat/models?platform={platform} | 查询指定平台当前发布的chat/embedding模型；第16节为待实现设计 |
+| GET /auto-media/api/chat/models/{model_type}/releases/{release_id} | 查询指定已发布版本的完整文件清单 |
+| GET /auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id} | 下载不可变版本文件，支持单区间Range及多个请求并行 |
+| HEAD /auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id} | 查询文件元信息，所有状态均无响应正文 |
 
 ## 1 公共类型、Header、路径与响应
 
@@ -43,6 +49,7 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | `OpaqueString` | 非空字符串，UTF-8最多128字节 | 不透明标识。`sync_epoch`、`messages_sync_epoch`、`receipt_sync_epoch` 等按完整字符串判断相等。 |
 | `TimestampMs` | JSON整数 | Unix纪元起的毫秒时间戳，非负；不是十进制数字字符串。created_at_ms、server_created_at_ms、server_time_ms、任务expires_at_ms/generated_at_ms均使用此类型；V4读取batch不返回任务期限。 |
 | `Count` | JSON整数 | 非负条数、页容量或分区数量，不是序号字符串；具体上下限由字段约束。例如`record_count=20`、`dimension=1024`。 |
+| `ByteCount` | JSON整数 | 第16节模型文件大小、块大小、总字节数，范围为0至9007199254740991，具体字段可要求正数；不是UInt64String。偏移与字节数均须精确计算，不使用32位整数。HTTP Range头使用十进制字节位置。 |
 | `Scope` | 字符串枚举 | `messages`、`memories`，区分大小写。完整同步范围还包含认证用户和当前`role_id`。 |
 | `JSONObject` | JSON对象 | 对象结构由对应业务模块定义；不能用序列化后的JSON字符串代替对象。 |
 | `JSONValue` | 合法JSON值 | 可为数字或业务模块定义的对象等合法JSON值；具体业务类型与空值含义由该业务模块约定，同步层不猜测内部字段。 |
@@ -53,14 +60,14 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 
 | 字段 | 类型 | 必填条件 | 含义及来源规则 |
 |---|---|---|---|
-| `Authorization` | 字符串 | 所有接口必填 | 当前登录用户的访问令牌，使用`Bearer <access_token>`格式。服务端从令牌解析`user_id`并校验会话权限；请求正文不能指定另一个用户替代该身份。 |
-| `X-Device-ID` | `ID` | 所有接口必填 | 客户端安装实例标识，由客户端生成并稳定保存。用于设备与请求诊断，不是用户ID、消息幂等键或多设备已读合并依据。 |
+| `Authorization` | 字符串 | 所有接口必填 | 当前登录用户的访问令牌，使用`Bearer <access_token>`格式。上游网关校验令牌并覆盖注入可信身份；本业务服务使用可信X-User-ID/X-Caller-Service，不重复解析登录Token。请求正文不能指定另一个用户替代该身份。模型目录、清单和每个分片请求也经过登录鉴权。 |
+| `X-Device-ID` | `ID` | roles/*、threads/*接口必填；第16节models/*不强制 | 客户端安装实例标识，由客户端生成并稳定保存。用于设备与请求诊断，不是用户ID、消息幂等键或多设备已读合并依据。 |
 | `X-Request-ID` | `ID` | 所有接口必填 | 本次HTTP调用的追踪ID，由调用方生成；同一业务请求重试时可以使用新的追踪ID。业务去重仍依赖message_id、mutation_id或reply_message_id。服务端将此值原样返回为公共字段request_id，用于关联单次HTTP请求和响应。 |
 | `Content-Type` | 字符串 | 发送JSON请求正文时必填 | 固定为`application/json`。GET不发送请求正文。 |
 
 ### 1.3 公共路径参数
 
-本文沿用 V4 客户端接口前缀 `/auto-media/api/`。专题设计中的示例使用 `/v4/chat/`，部署联调时需确认网关前缀。路径参数由 URL 编码承载，解码后按下表校验。
+全部接口统一使用前缀 `/auto-media/api/chat`，不提供旧前缀别名。路径参数由 URL 编码承载，解码后按下表校验。
 
 | 字段 | 类型 | 必填条件 | 含义及来源规则 |
 |---|---|---|---|
@@ -68,6 +75,9 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | `scope` | `Scope` | 路径包含该参数时必填 | `messages` 支持 recent/history/full/incremental 和消息删除，`memories` 仅开放 full/incremental 读取。 |
 | `mutation_id` | `ID` | 查询Mutation资源时必填 | 客户端首次持久化操作时生成的稳定操作ID。查询或重试使用原ID，不能为一次网络重试新建逻辑操作。 |
 | `task_id` | `ID` | 查询或取消多模态任务时必填 | 服务端创建任务后返回的资源ID。它不同于回复消息ID；查询任务不会另建回复消息。 |
+| `model_type` | 字符串枚举 | 模型版本及文件路径必填 | `chat`或`embedding`；与角色、用户、Scope无关。 |
+| `release_id` | 非空字符串 | 模型版本及文件路径必填 | 服务端生成的`rel_`加32位小写hex；绑定一个不可变模型发布版本，不是version字符串或消息Epoch。 |
+| `file_id` | 非空字符串 | 模型文件路径必填 | 服务端生成的`f_`加32位小写hex，只在指定release中查找；不接受本地磁盘路径。 |
 
 `user_id`不作为客户端可指定的公共请求参数，始终由认证上下文获得。会话列表通过请求中各`local_read_positions[].role_id`标识阅读位置所属会话，规则与路径`role_id`一致。
 
@@ -77,9 +87,11 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 |---|---|---|---|
 | `request_id` | `ID` | 所有JSON响应必填 | 服务端返回的本次调用追踪ID，原样返回本次`X-Request-ID`；不代表业务操作已完成，也不用于幂等判断。 |
 | `server_time_ms` | `TimestampMs` | 所有JSON响应必填 | 服务端生成该响应时的时间。仅用于时间展示与诊断，不能充当同步游标、对象版本或消息顺序。 |
-| `error` | 对象，结构见1.5 | HTTP失败，或查询到status=failed的操作/任务时必填 | 统一错误结构；普通成功结果不返回。HTTP200仍可成功查询到一个业务失败的任务。业务字段在同一响应对象，不额外假定有data包装层。 |
+| `error` | 对象，结构见1.5 | 业务API返回JSON失败，或查询到status=failed的操作/任务时必填 | 统一错误结构；普通成功结果不返回。HTTP200仍可成功查询到一个业务失败的任务。业务字段在同一响应对象，不额外假定有data包装层。第16节文件二进制响应、304、HEAD及下载层原生错误不套用JSON结构。 |
 
 V4两个同步读取入口成功均200，没有读取资源preparing/201/202/204。业务创建及任务仍按具体接口返回200/201/202；202不表示本地同步完成。所有HTTP JSON返回公共字段；嵌套RecordsPayload不重复HTTP公共字段。
+
+第16节模型目录与清单继续返回上述公共JSON字段。模型文件GET的200/206响应正文为原始字节，304与HEAD无正文；下载层原生412、416和其他传输层错误可能为空或错误页，不能要求解析为本节Error，具体见16.4和16.5。
 
 ### 1.5 Error
 
@@ -272,7 +284,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 普通非空区间宽度最多 200。超宽或超响应字节返回 413。
 
-所有客户端 HTTP 请求与响应均省略模型协商字段。`memories` 读请求省略 `expected_embedding_model_version`，成功和错误响应、内联数据、`sync-state` 和 `sync_hints` 均省略 `embedding_config`、模型版本和安装包标识。向量兼容性由随应用发布的本地模型保证，见第 11 节。
+消息/记忆同步接口的请求与响应均省略模型协商字段。`memories`读请求省略`expected_embedding_model_version`，同步成功和错误响应、内联数据、`sync-state`和`sync_hints`均省略`embedding_config`、模型版本和安装包标识。第16节独立模型分发接口返回自身的版本、文件与校验信息；该发布信息不改变Memory向量合同，也不代表客户端下载的Qwen embedding可查询服务端记忆向量，见第11节。
 
 ## 3 会话列表查询：threads/query
 
@@ -1096,7 +1108,7 @@ MULTIMODAL_ENABLED停止新生成时，已经generated且仍合法有效的候�
 
 区间必须非空且在本轮范围内。`incremental` 须满足 `C <= lower_exclusive < upper_inclusive <= H`。沿用创建响应的 Epoch、C、H。服务端在同一读视图校验位置及查询正文。`incremental` 检查原 C，`full` 检查固定 H，低于当前 `min_valid_cursor` 时返回 409 `SYNC_CURSOR_EXPIRED`。读源尚未追到 H 时等待、切换读源或返回可重试的 503。
 
-服务端以请求中的显式范围及上下文执行查询。客户端通过 `request_id` 关联本地任务，保存前核对角色、Scope、模式、Epoch、C、H 和上下界，并确认任务、缓存代次及当前叶区间仍有效。`memories` 的摘要和问句向量按本地已验收的模型约定校验。
+服务端以请求中的显式范围及上下文执行查询。客户端通过 `request_id` 关联本地任务，保存前核对角色、Scope、模式、Epoch、C、H 和上下界，并确认任务、缓存代次及当前叶区间仍有效。`memories` 的摘要和问句向量按本接口固定的1024维、有限数值和归一化合同校验，不根据第16节客户端下载模型的维度推断。
 
 RecordsPayload是普通响应剔除request_id和server_time_ms后的记录对象。inline_result完整复用它。
 
@@ -1334,26 +1346,26 @@ recent/history未选中消息时根范围为(0,0]且历史锚点null/false；ful
 
 仅当所有区间完整覆盖本轮范围后，才使用 commit_cursor。full 的记录可能带有大于 H 的 sync_seq，对象版本仍按 sync_seq 比较。
 
-## 11 长期记忆同步与本地检索
+## 11 服务端长期记忆同步与缓存边界
 
 ### 11.1 同步、持久化与就绪
 
 1. 打开角色聊天、回到前台或收到该角色 `memories` 更新提示时异步同步，活跃角色每 30 秒补查。首次 `full`，随后从本地已提交游标 C 做 `incremental`。消息发送或补传回执只触发相关读取，游标按实际覆盖推进。
 2. 按认证账号、角色、Epoch 和缓存代次隔离。SQLite 同事务保存当前父记录、完整摘要及问句向量、根来源关联、最高删除版本和叶区间完成状态。较新 upsert 整体替换父记录及全部派生项，delete 按父 ID 移除各视图并保留最高墓碑。若使用外部索引，同事务登记精确新增和淘汰视图 ID，重启后可幂等重放。
-3. 普通增量首次修改时标记 `updating` 并暂停该 Scope 检索。全部叶区间完整覆盖且索引的父版本、完整视图身份核对通过后提交本轮 H。检索就绪还要求本地模型有效、同 Epoch 删除目标均已达到、旧 Epoch 删除目标已通过重建解决。带 `limit` 的增量即使已提交本轮 H，若仍未达到目标则保持 `updating` 并继续追赶。
-4. 首次同步和重建在候选缓存完成 `full`、至少一轮省略 `limit` 的 `incremental`、本地模型探针、索引与删除屏障核对后原子激活。确认旧 Epoch 失效时停用旧缓存并取消旧读取任务，按代次清理旧记录及索引，保留 Outbox 和仍需核验的删除约束。跨 Epoch 不比较 Seq。向量空间不兼容时由发布流程先提供对应应用包，并通过版本门禁或独立入口保证兼容。
+3. 普通增量首次修改时标记 `updating`。全部叶区间完整覆盖且父版本、完整视图身份及删除屏障核对通过后提交本轮 H。带 `limit` 的增量即使已提交本轮 H，若仍未达到清理目标则保持 `updating` 并继续追赶；尚未核对完整的缓存不能作为已同步的有效来源。
+4. 首次同步和重建在候选缓存完成 `full`、至少一轮省略 `limit` 的 `incremental`、记录完整性与删除屏障核对后原子激活。确认旧 Epoch 失效时停用旧缓存并取消旧读取任务，按代次清理旧记录及适用的派生索引，保留 Outbox 和仍需核验的删除约束。跨 Epoch 不比较 Seq；本次客户端下载模型的发布不触发Memory重建或Epoch切换。
 
-### 11.2 本地向量生成与使用
+### 11.2 客户端embedding与服务端记忆独立
 
-应用预装与服务端同源且完成跨端对照的 BGE-M3 dense 编码器，使用安装包内的模型和预处理标识。端侧只对当前用户文本编码，摘要和发散问句直接使用下行的 1024 维向量。离线可使用已就绪的缓存。模型缺失、向量校验失败或索引不可用时，停用长期记忆检索，保留待处理区间和当前游标，回复可使用近期对话继续。
+2026-11-25确认：客户端embedding不与服务端embedding互通，本次分发模型不用于服务端对话记忆。第16节分发的客户端embedding不被声明为现有BGE-M3记忆空间的兼容模型，不能因维度相同或下载成功就用它查询本接口下行的摘要、问句向量。服务端继续使用自身固定1024维BGE-M3空间执行记忆处理，客户端模型发布不改写该配置。
 
-用同一查询向量分别查摘要 Top 20 和问句 Top 100。回查 SQLite 验证账号、角色、缓存代次、Epoch、模型和当前父版本，过滤墓碑和已知失效根。按父 ID 去重取有效视图的最高余弦分，并列按 `memory_id` 排序。生产环境使用已验收的检索配置，按其阈值选最多 20 个父候选，再按预算注入最多 4 条完整摘要及其标题、可用时间。缺少已验收配置时使用近期对话生成。当前用户输入只注入一次，冻结实际注入的来源版本，见第 5.1 节。
+旧版“应用预装同源BGE编码器、本地生成query向量、按摘要Top20/问句Top100检索后最多注入4条记忆”的客户端实现要求在本期撤销。Memory完整记录、来源版本和删除屏障的读取合同继续保留；已有来源声明仍须满足第5.1节真实采集与可核验要求，不得伪造使用过的记忆。若未来需要客户端检索服务端记忆，须另行确定兼容空间与查询协议。本文件只定义本次服务端模型分发接口，不规定客户端安装、推理或本地检索实现。
 
 ### 11.3 删除屏障与损坏恢复
 
 - 发起设备使用 `cascade_sync_barrier`，其他设备在消息区间或内联结果收到删除时使用同响应的 `related_memory_barrier`。同一个 SQLite 事务应用消息删除、记录 `known_deleted` 和待清理屏障。立即按根消息反查屏蔽受影响的记忆，并取消依赖这些来源的未完成生成。来源不足以安全判断时暂停该角色的记忆查询。仅未加载消息或仅提示水位增加时，继续按正常同步处理。
 - 同 Epoch 的清理目标取最大值。正文和全部摘要及问句视图实际追赶并完成索引清理后解除屏障。目标 Epoch 已失效时，在观察到删除后新建当前 Epoch 的 full 和增量，完成核对再恢复。若缺少可用屏障，后续记忆读取视图至少要在因果上覆盖已观察到的删除，才可恢复检索。
-- 缓存损坏时隔离旧缓存并使旧任务失效。能够可信读取的删除约束经完整性校验后迁移到新缓存。无法可信读取约束时停用记忆检索，在线发起 `memories` full，在第 9 节的全量请求正文中加 `"require_fresh_provenance_anchor": true`，再完成至少一轮省略 `limit` 的增量以及模型、索引和新屏障核对。断网期间继续使用近期对话。Outbox 独立保留，迟到回包和旧备份不能直接激活。
+- 缓存损坏时隔离旧缓存并使旧任务失效。能够可信读取的删除约束经完整性校验后迁移到新缓存。无法可信读取约束时停用该记忆缓存，在线发起 `memories` full，在第 9 节的全量请求正文中加 `"require_fresh_provenance_anchor": true`，再完成至少一轮省略 `limit` 的增量以及记录、适用索引和新屏障核对。Outbox 独立保留，迟到回包和旧备份不能直接激活。
 
 ## 12 服务端多模态任务
 
@@ -1660,6 +1672,9 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | `suggested_ranges` | 对象数组，413可选 | 最多200项建议的替代叶范围；如出现，按顺序精确覆盖原失败范围，无空洞/重叠，不能含原范围自身。 |
 | `suggested_ranges[].lower_exclusive` | UInt64String，每项必填 | 子范围排除下界；首项等于原下界，后项等于前项上界。 |
 | `suggested_ranges[].upper_inclusive` | UInt64String，每项必填 | 子范围包含上界，须大于下界；最后一项等于原上界，每项宽度严格更小且<=建议跨度。 |
+| `model_type` | string，第16节业务JSON错误可选 | `chat`或`embedding`，不指服务端记忆embedding版本。 |
+| `release_id` | string，第16节业务JSON错误可选 | 出错发布版本ID；已手动清理的版本也保留此身份。 |
+| `file_id` | string，第16节业务JSON错误可选 | 出错文件ID，不含服务器绝对路径。 |
 
 错误处理见下表。
 
@@ -1723,7 +1738,7 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 
 ## HTTP 状态与错误码
 
-“客户端动作”列为文档说明，不是新增响应字段。多模态错误按创建、生成、候选上传的阶段解释；上传异常不等于需要重新生成。任务详细错误见12.5，普通同步继续执行原有恢复规则。[第15节](#15-错误码逐项示例)逐码提供请求、响应与客户端动作示例。
+“客户端动作”列为文档说明，不是新增响应字段。多模态错误按创建、生成、候选上传的阶段解释；上传异常不等于需要重新生成。任务详细错误见12.5，普通同步继续执行原有恢复规则。[第15节](#15-错误码逐项示例)提供既有业务错误的逐码示例；新增模型分发错误、原生HTTP状态和示例见16.5。
 
 | HTTP / code | 客户端动作 | 说明 |
 |---|---|---|
@@ -1758,10 +1773,17 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | 429 [RATE_LIMITED](#e32-rate_limited) / 503 [TEMPORARY_SERVER_ERROR](#e33-temporary_server_error) | 按出错阶段重试原POST/GET/batchCreate | 遵守retry_after_ms；候选已返回后不因暂时异常生成第二条回复。 |
 | 配置 / [POST_VECTOR_SCHEMA_INVALID](#e35-post_vector_schema_invalid)等直接HTTP诊断 | 修复服务后恢复原责任 | 配置异常本身不证明候选或上传结果。 |
 | [MULTIMODAL_INPUT_INVALID](#e12-multimodal_input_invalid) / [MULTIMODAL_INPUT_ALREADY_DECIDED](#e13-multimodal_input_already_decided)（旧message-v1） | 按原单消息合同恢复 | 只保留旧责任恢复，不要求v3先同步聊天或传来源列表。 |
+| 404 MODEL_RELEASE_NOT_FOUND | 核对model_type/release_id/file_id | 从未发布、未发布或目标文件不存在；不使用其他版本字节填补原文件。 |
+| 410 MODEL_RELEASE_GONE | 重新查询模型目录 | 指定旧版本正在手动清理或已清理，不能继续请求其缺失区间。 |
+| 503 MODEL_ARTIFACT_UNAVAILABLE | 保留已核验区间，按提示重试固定版本 | 仍可用版本的磁盘文件缺失/不可读等异常，由运维修复；handoff后的错误也可能只有HTTP状态或连接中断。 |
+| 200 / 206 模型文件 | 按响应的完整文件或Content-Range解释字节 | 正文为二进制，无JSON公共字段；200不代表原Range得到满足。 |
+| 304 模型文件 | 使用满足条件的既有文件表示 | 无文件正文，不代表下载了新分片；目录和清单API不使用304。 |
+| 412 模型文件 | 核对文件HTTP前置条件 | If-Match或If-Unmodified-Since未满足；下载层原生响应不保证JSON错误码，HEAD无正文。 |
+| 416 模型文件 | 核对固定版本大小及原字节区间 | 依Content-Range中的完整大小判断；下载层原生响应不保证JSON错误码。 |
 
 ## 15 错误码逐项示例
 
-本节为前述客户端公开错误表中的每个code提供独立示例；一个表格行中的多个code分别展示，不使用斜杠拼接error.code。每例给出触发条件、接口、请求、HTTP状态、完整错误响应和客户端动作。details只展示该例需要的可选字段，message文字仅供说明，客户端不能按文字判断流程。
+本节为前述既有聊天/同步业务错误提供独立示例；新增模型分发错误另见16.5。一个表格行中的多个code分别展示，不使用斜杠拼接error.code。每例给出触发条件、接口、请求、HTTP状态、完整错误响应和客户端动作。details只展示该例需要的可选字段，message文字仅供说明，客户端不能按文字判断流程。
 
 涉及client-commit-v3的新分支均为当前代码合同示例，不代表目标部署已升级或真实依赖已验收；E12/E13仅解释旧message-v1历史责任。登录Token、网关权限和受信入口的兼容拒绝见相应示例，不因此新增业务服务的鉴权实现。
 
@@ -3216,3 +3238,290 @@ Content-Type: application/json
 客户端已将generated返回的原message通过batchCreate上传，但连接超时、响应丢失或收到无法校验的非JSON响应。此时没有可用error.code，不能在本地伪造MULTIMODAL_GENERATION_FAILED或认定整批未提交。
 
 客户端动作：保留原message_id、正文、created_at_ms、proactive_context及首次冻结metadata，重试原batchCreate消息负载；公共追踪ID和既有动态快照版本按原规则更新。查询同task仅辅助观察，generated也不能单独证明刚才上传未提交。服务端若已提交则回放原成功逐条回执，客户端不换ID、不重建任务、不生成第二条回复。MULTIMODAL_TASK_EXPIRED和MULTIMODAL_REQUEST_EXPIRED都不代表候选上传超时。
+
+## 16 客户端模型发布与下载
+
+本节为模型查询、文件清单与下载接口合同，更新于2026-11-26，尚未实现。
+
+### 16.1 接口概览与公共约定
+
+`chat`与`embedding`独立查询当前版本，所有用户在同一平台获得相同结果。`platform`只接受`ios`、`android`；同一清单的`platforms`可以同时包含两端。当前版本以目录接口为准，使用返回的`release_id`与本地已安装版本的`release_id`判等检测更新，详见16.2.1；`version`只展示及判等，不按字符串、数字或语义版本推断更新顺序。
+
+全部请求携带当前用户的`Authorization: Bearer <access_token>`和`X-Request-ID`，`models/*`不强制`X-Device-ID`，不需要`role_id`。每个并发文件GET/HEAD都需要同样的登录鉴权。
+
+固定版本清单及文件URL绑定不可变`release_id`，相同URL的字节、路径和校验值不变。目录出现新版后，仍可通过原URL读取尚未删除的旧版，不重定向到新版。已删除或清理中的旧版本返回410，原身份不复用。清理期间，先前成功的HEAD不保证后续GET仍成功，在途传输也可能收到原生404或连接异常；旧URL不会改为返回新版字节。
+
+### 16.2 查询指定平台当前发布模型
+
+`GET /auto-media/api/chat/models?platform=ios`。无请求正文。
+
+| 请求参数 | 类型 | 必填条件 | 规则 |
+|---|---|---|---|
+| platform | 字符串枚举，query | 必填，且只出现一次 | 只接受`ios`或`android`，区分大小写。不接受其他query参数。 |
+
+成功为HTTP200，返回公共JSON字段及`models`数组。`models`每个`model_type`最多一项，存在两项时固定按`chat`、`embedding`排列；该平台尚未发布的类型省略，两个类型都未发布时合法返回`[]`。接口暂不可用时返回503，不能伪装为空目录；两类模型分别返回各自的当前版本。
+
+| models[]字段 | 类型 | 必填 | 含义 |
+|---|---|---|---|
+| model_type | `chat`或`embedding` | 是 | 模型用途。 |
+| release_id | `rel_`加32位小写hex | 是 | 当前发布版本的固定身份，也是更新检测字段；与本地同平台、同model_type已安装模型的release_id比较是否相同。后续清单与下载均绑定该ID。 |
+| version | string | 是 | 1～64个ASCII字符，匹配`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`；不透明业务版本。 |
+| model_name | 非空string | 是 | 发布的模型名称，最多256个UTF-8字节，不作为HTTP路径解析。 |
+| manifest_url | string | 是 | 同源根相对路径，固定为下节的模型类型及release路径，无凭据、query或fragment。 |
+
+请求示例：
+
+```http
+GET /auto-media/api/chat/models?platform=ios
+Authorization: Bearer <access_token>
+X-Request-ID: req_models_1
+```
+
+下列目录与16.3清单使用同一个合成示例：文件内容仅为ASCII的`abc`，ID、时间、模型名和版本均为示例值。
+
+```json
+{
+  "request_id": "req_models_1",
+  "server_time_ms": 1795564801000,
+  "models": [
+    {
+      "model_type": "embedding",
+      "release_id": "rel_11111111111141118111111111111111",
+      "version": "fixture-1",
+      "model_name": "synthetic-embedding-fixture",
+      "manifest_url": "/auto-media/api/chat/models/embedding/releases/rel_11111111111141118111111111111111"
+    }
+  ]
+}
+```
+
+#### 16.2.1 模型更新判断
+
+调用`GET /auto-media/api/chat/models?platform=当前平台`后，按`model_type`分别读取`models[]`中的`release_id`，与本地当前已安装并可用的同类型模型`release_id`进行完整字符串相等比较：
+
+| 本地状态与比较结果 | 接口含义 | 后续调用 |
+|---|---|---|
+| 本地尚未安装该类型模型 | 首次下载 | 使用该项manifest_url获取清单，再按清单下载文件。 |
+| 本地release_id与返回值相同 | 当前已安装版本与服务端当前发布版本一致，无需更新 | 无需重复获取文件。 |
+| 本地release_id与返回值不同 | 服务端当前发布版本已变化，可更新到该版本 | 使用该项manifest_url获取固定版本清单及文件；是否立即更新由客户端决定。 |
+
+`chat`与`embedding`独立判断；不同平台之间不比较release_id。`release_id`仅判断相等，不比较大小；`version`为展示标签，不用于判断哪个版本更新。比较基准是本地已安装且可用的版本，不能把刚收到或尚在下载的release_id当作已安装版本；本地模型缺失或不可用时，即使缓存ID相同，也不能据此判定无需下载。
+
+成功响应省略某个model_type或返回`models: []`，表示该平台没有对应的当前发布模型，不代表要求删除本地已安装模型。请求失败时按错误合同处理，不把失败当成“没有更新”。
+
+### 16.3 查询固定版本清单
+
+`GET /auto-media/api/chat/models/{model_type}/releases/{release_id}`。无query参数、无请求正文。成功为HTTP200，公共JSON字段之外只返回`manifest`。`manifest`严格包含下表字段；文件也只含文件表定义的字段。
+
+| manifest字段 | 类型 | 必填 | 含义与约束 |
+|---|---|---|---|
+| schema_version | JSON整数 | 是 | 固定`1`，清单结构版本。 |
+| model_type | 字符串枚举 | 是 | `chat`或`embedding`，与路径一致。 |
+| release_id | string | 是 | 与路径一致的固定版本身份。 |
+| version | string | 是 | 16.2定义的业务版本；同type/version/platform不能发布不同内容，已清理身份也不复用。 |
+| model_name | 非空string | 是 | 模型显示名称，最多256个UTF-8字节。 |
+| platforms | 字符串数组 | 是 | 非空且去重，只含`ios`、`android`，按字典序排列；两端共用时固定为`["android","ios"]`。 |
+| artifact_format | 非空string | 是 | 文件格式描述，最多64个ASCII字节，例如`gguf`。 |
+| created_at_ms | TimestampMs | 是 | 版本创建时间。 |
+| published_at_ms | TimestampMs | 是 | 首次对外发布时间，不早于created_at_ms；再次设为当前版本不改写此值。 |
+| total_size_bytes | 正ByteCount | 是 | files[].size_bytes之和。 |
+| chunk_size_bytes | 正ByteCount | 是 | 本清单固定校验块大小，初始33554432，即32MiB；不是一次HTTP响应的强制大小。 |
+| suggested_parallelism | JSON正整数 | 是 | 建议并发请求数，初始4；不保证服务器始终提供4个可用连接或吞吐线性增加。 |
+| files | 非空对象数组 | 是 | 完整必需文件集合，按path的UTF-8二进制顺序排列，file_id和path各自不重复。 |
+
+| files[]字段 | 类型 | 必填 | 含义与约束 |
+|---|---|---|---|
+| file_id | `f_`加32位小写hex | 是 | 该文件在此release内的稳定身份。 |
+| path | 非空string | 是 | 模型目录内安全的POSIX相对路径，最多512个UTF-8字节，允许分层；禁止绝对路径、反斜杠、空段、`.`或`..`段及控制字符。按NFC规范化后再casefold检查重名，并拒绝文件/目录前缀冲突，例如同时存在`a`与`a/b.gguf`；原始路径及NFC后casefold的路径均须检查。清单保留原始路径，不据此改写文件名。只作文件布局描述，下载请求不提交此路径。 |
+| size_bytes | 非负ByteCount | 是 | 原始文件总字节数N，允许0字节文件。整份清单至少一个文件且total_size_bytes大于0。 |
+| sha256 | 64位小写hex字符串 | 是 | 原始完整文件字节的SHA-256。与HTTP ETag不同；空文件固定为`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。 |
+| chunks | 对象数组 | 是 | 按index顺序排列，数量恰为`ceil(N/chunk_size_bytes)`；每项严格包含index、start、end、size_bytes、sha256五个字段，空文件返回`[]`。 |
+| chunks[].index | 非负JSON整数 | 是 | 从0开始连续递增，等于该项的数组下标。 |
+| chunks[].start | 非负ByteCount | 是 | 起始字节偏移，包含该位置；使用精确JSON整数。 |
+| chunks[].end | 非负ByteCount | 是 | 结束字节偏移，包含该位置；使用精确JSON整数，满足`0 <= start <= end < files[].size_bytes`。 |
+| chunks[].size_bytes | 正ByteCount | 是 | 本块字节数，恰为`end-start+1`；末块允许小于chunk_size_bytes。 |
+| chunks[].sha256 | 64位小写hex字符串 | 是 | 仅本块原始文件字节的SHA-256，覆盖包含式区间`[start,end]`。 |
+| download_url | string | 是 | 同源根相对固定版本文件路径：`/auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id}`；无query、fragment或登录凭据。 |
+
+`chunks[]`中的start和end均包含，对应原始文件字节区间`[start,end]`，与HTTP Range边界一致。非空文件的首项start为0，相邻两项满足前一项end加1等于后一项start，最后一项end等于文件size_bytes减1，完整覆盖文件且不重叠。设S为chunk_size_bytes、N为文件size_bytes，第i项从0计数，`index=i`、`start=i*S`、`end=min((i+1)*S,N)-1`、`size_bytes=end-start+1`；除末块外本块size_bytes均为S，末块可不足S。采用默认32MiB时，足够大的文件首块为start=0、end=33554431、size_bytes=33554432。
+
+下载一个完整块时，使用所属文件的download_url和该块的`Range: bytes={start}-{end}`，不另设分片URL。正常206响应须有`Content-Range: bytes start-end/N`且`Content-Length`等于本块size_bytes，完整收到的本块原始字节使用该块sha256校验。若响应为200，则是完整文件，不能将整个响应直接与某一块sha256比较。仍可请求不对齐块边界的任意合法Range，但须收齐某个固定块的全部字节后才能校验其sha256。发布后相同URL的文件字节和分块边界保持不变。
+
+清单返回完整文件集合，不截断files或分块哈希数组。大文件下载不受普通RecordsPayload的1MiB同步响应限制。
+
+合成清单响应示例：文件为3字节`abc`；仅为演示多块和不足整块的末块，示例将chunk_size_bytes设为2，实际初始默认值仍为33554432。两块分别为2字节`ab`和1字节`c`，文件与分块SHA-256均按实际示例字节计算。
+
+```json
+{
+  "request_id": "req_manifest_1",
+  "server_time_ms": 1795564802000,
+  "manifest": {
+    "schema_version": 1,
+    "model_type": "embedding",
+    "release_id": "rel_11111111111141118111111111111111",
+    "version": "fixture-1",
+    "model_name": "synthetic-embedding-fixture",
+    "platforms": ["android", "ios"],
+    "artifact_format": "test-fixture",
+    "created_at_ms": 1795564800000,
+    "published_at_ms": 1795564801000,
+    "total_size_bytes": 3,
+    "chunk_size_bytes": 2,
+    "suggested_parallelism": 4,
+    "files": [
+      {
+        "file_id": "f_22222222222242228222222222222222",
+        "path": "fixture.bin",
+        "size_bytes": 3,
+        "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "chunks": [
+          {
+            "index": 0,
+            "start": 0,
+            "end": 1,
+            "size_bytes": 2,
+            "sha256": "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"
+          },
+          {
+            "index": 1,
+            "start": 2,
+            "end": 2,
+            "size_bytes": 1,
+            "sha256": "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6"
+          }
+        ],
+        "download_url": "/auto-media/api/chat/models/embedding/releases/rel_11111111111141118111111111111111/files/f_22222222222242228222222222222222"
+      }
+    ]
+  }
+}
+```
+
+### 16.4 固定文件GET、HEAD与Range
+
+`GET|HEAD /auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id}`。不接受query参数或请求正文。目录与清单响应为JSON，文件GET成功响应为原始文件字节。
+
+| 请求Header | 是否必填 | 规则 |
+|---|---|---|
+| Authorization、X-Request-ID | 是 | 每个并发请求都携带；规则见1.2。 |
+| Range | 否 | GET支持一个连续`bytes`区间，例如`bytes=0-33554431`、`bytes=33554432-`或`bytes=-1024`；拒绝多区间、重复Range头和非法语法，返回400 INVALID_ARGUMENT。没有Range则取完整文件。 |
+| If-Range | 否 | 与GET Range一起使用；建议使用此前同一固定文件返回的强ETag。也支持满足标准比较规则的Last-Modified日期。条件不满足、弱ETag或不能匹配时忽略Range，发送完整200。HEAD忽略Range和If-Range。 |
+| If-None-Match、If-Modified-Since | 否 | 文件GET/HEAD遵循标准条件请求；条件满足时可返回304，不发送文件正文。普通前置条件先于Range处理，不将304解释为某个分片已下载。目录/清单JSON入口不使用这些条件头。 |
+| If-Match、If-Unmodified-Since | 否 | 文件GET/HEAD遵循标准前置条件比较；条件不满足时返回412，不发送模型文件内容。HEAD的412也无正文；GET的412可为空或HTTP错误页，不保证JSON错误对象。 |
+
+单区间的末端为包含式。对非空文件N>0，合法起点小于N而末端大于等于N时截到N-1；合法区间无法满足时返回416，例如起点大于等于N或零长度后缀`bytes=-0`。If-Range条件不满足时先忽略Range，不能仅因被忽略的区间起点越界而返回416。空文件N=0时，普通GET/HEAD返回200、Content-Length为0且无文件正文；合法Range可被忽略而返回同样的空200，也可返回416及`Content-Range: bytes */0`，不会返回206。偏移和长度按精确整数处理，超过4GiB仍有效；不将32MiB建议块大小误用为强制Range上限。
+
+| HTTP状态 | 响应含义 | 正文与关键响应头 |
+|---|---|---|
+| 200 GET | 完整文件；包括未发送Range或If-Range未满足 | 原始N字节；`Content-Length: N`，没有Content-Range。 |
+| 206 GET | 单区间[a,b]，满足0≤a≤b<N | 原始区间字节；`Content-Range: bytes a-b/N`，`Content-Length: b-a+1`。 |
+| 200 HEAD | 无条件文件元信息查询成功 | 无正文；Content-Length为完整N，空文件为0；忽略Range/If-Range。 |
+| 304 GET/HEAD | 对文件的普通条件请求满足缓存验证条件 | 无正文；携带适用的ETag、Last-Modified、Cache-Control、X-Request-ID。 |
+| 412 GET/HEAD | If-Match或If-Unmodified-Since等普通前置条件不满足 | 不发送模型文件内容；GET正文可能为空或HTTP错误页，HEAD无正文，不保证JSON。 |
+| 416 GET | Range语法合法但不能满足，且没有被前置条件或If-Range忽略；空文件也可返回此状态 | `Content-Range: bytes */N`，空文件为`bytes */0`；正文可能为空或HTTP错误页，不保证JSON。 |
+
+文件200/206以及成功HEAD提供`Content-Type: application/octet-stream`、强`ETag`、`Last-Modified`、`X-Request-ID`，以及`Cache-Control: private, no-store, no-transform`。非空文件200/206及成功HEAD还提供`Accept-Ranges: bytes`；空文件GET不保证此头。响应没有Content-Encoding，Range与清单校验值均针对原始文件字节。ETag用于HTTP条件比较，不能当作文件SHA-256，也不能用于不同URL之间的内容等价判定；内容校验依清单SHA-256。所有HEAD响应状态都无正文，包括鉴权失败和文件不存在。
+
+分片并发指对同一固定文件发起多个单区间HTTP请求，各请求可以独立重试；断点续传可继续请求缺失的字节范围。每次请求的字节范围以本次响应状态和Content-Range为准，不能将If-Range失败后的完整200正文当作原区间直接拼接。清单中的并发数只是建议，实际并发过多可收到HTTP429，按响应等待建议重试。HTTP规则依据[RFC 9110 Range请求](https://www.rfc-editor.org/rfc/rfc9110.html#name-range-requests)和[If-Range](https://www.rfc-editor.org/rfc/rfc9110.html#name-if-range)。
+
+以下继续使用3字节`abc`合成夹具。ETag和日期仅作HTTP字段示例，不是真实部署承诺的ETag格式。
+
+```http
+GET /auto-media/api/chat/models/embedding/releases/rel_11111111111141118111111111111111/files/f_22222222222242228222222222222222
+Authorization: Bearer <access_token>
+X-Request-ID: req_range_1
+Range: bytes=0-1
+If-Range: "fixture-etag-1"
+
+HTTP/1.1 206 Partial Content
+Content-Type: application/octet-stream
+Content-Length: 2
+Content-Range: bytes 0-1/3
+Accept-Ranges: bytes
+ETag: "fixture-etag-1"
+Last-Modified: Wed, 25 Nov 2026 00:00:00 GMT
+Cache-Control: private, no-store, no-transform
+X-Request-ID: req_range_1
+
+ab
+```
+
+上例对应chunks[0]，响应正文`ab`的SHA-256应与该块sha256相同；chunks[1]使用同一文件URL及`Range: bytes=2-2`，正常返回206、Content-Range为`bytes 2-2/3`、Content-Length为1，正文为`c`。若上例If-Range改为不匹配的`"fixture-old-etag"`，响应为200、Content-Length为3、正文为`abc`，不返回Content-Range，不能把完整`abc`直接当作第一块校验。若条件匹配但Range改为`bytes=3-`，返回416及`Content-Range: bytes */3`。若使用HEAD，忽略这些Range条件，普通无条件请求返回200、Content-Length为3且没有`abc`正文。
+
+### 16.5 错误合同与示例
+
+| HTTP / error.code | retryable | 适用条件与处理 |
+|---|---|---|
+| 400 INVALID_ARGUMENT | false | platform缺失/非法/重复、未知query参数、非法model_type或ID格式、GET/HEAD携带正文、Range语法非法/多区间/重复头。修正请求，不用错误参数重试。 |
+| 401/403 公共身份/入口错误 | 按公共合同 | 模型文件也需要有效登录身份，不能改用内部静态路径绕过。HEAD没有JSON正文。 |
+| 404 MODEL_RELEASE_NOT_FOUND | false | 版本未曾发布、尚未发布，或指定release下不存在file_id；合法但不匹配的model_type/release也视为未找到。重新核对目录和固定清单。 |
+| 410 MODEL_RELEASE_GONE | false | 指定旧版本已删除或清理中。重新查询当前目录，不把新版区间拼到旧版文件。 |
+| 503 MODEL_ARTIFACT_UNAVAILABLE | true | 模型接口或指定文件暂不可用。保留固定版本身份并按retry_after_ms重试，不改成读取其他版本。 |
+| 429 RATE_LIMITED | true | 业务API限流时返回公共JSON错误及等待建议。下载连接层也可能只有HTTP429和适用的Retry-After，不能强求error对象。 |
+| 503 TEMPORARY_SERVER_ERROR | true | 元数据读取等服务依赖暂时失败；不能将该失败解释为空目录或模型版本不存在。 |
+| 412，无保证的error.code | 不提供JSON标志 | If-Match或If-Unmodified-Since等前置条件未满足；没有模型文件内容，GET可为空或错误页，HEAD无正文。 |
+| 416，无保证的error.code | 不提供JSON标志 | 区间不可满足，空文件也可返回此状态；依据Content-Range核对文件大小与Range，正文可能为空或错误页。 |
+| 原生403、404、429或5xx；连接中断 | 不提供JSON标志 | 文件传输中可能出现非JSON错误或中断。不能伪造MODEL_RELEASE_GONE等业务码；按状态、已知版本和实际收到的字节判断本次传输结果。 |
+
+业务API在发文件前拒绝GET时返回公共JSON Error；文件传输开始后的错误或连接中断不保证有JSON错误响应。固定版本清理期间，即使先前HEAD成功，后续GET仍可能失败。
+
+以下三份响应均为协议示例，并非真实模型已发布或已清理的记录。请求分别为指定fixture版本的清单GET，及其文件GET；都携带合法公共身份与对应X-Request-ID。文件请求未发送Range。
+
+版本尚未发布，清单GET返回HTTP404：
+
+```json
+{
+  "request_id": "req_model_not_found",
+  "server_time_ms": 1795564803000,
+  "error": {
+    "code": "MODEL_RELEASE_NOT_FOUND",
+    "message": "Model release was not found",
+    "retryable": false,
+    "retry_after_ms": 0,
+    "details": {
+      "model_type": "embedding",
+      "release_id": "rel_11111111111141118111111111111111"
+    }
+  }
+}
+```
+
+版本已手动清理，文件GET返回HTTP410：
+
+```json
+{
+  "request_id": "req_model_gone",
+  "server_time_ms": 1795564804000,
+  "error": {
+    "code": "MODEL_RELEASE_GONE",
+    "message": "Model release is being removed or has been removed",
+    "retryable": false,
+    "retry_after_ms": 0,
+    "details": {
+      "model_type": "embedding",
+      "release_id": "rel_11111111111141118111111111111111",
+      "file_id": "f_22222222222242228222222222222222"
+    }
+  }
+}
+```
+
+指定版本文件暂不可用，文件GET返回HTTP503：
+
+```json
+{
+  "request_id": "req_model_unavailable",
+  "server_time_ms": 1795564805000,
+  "error": {
+    "code": "MODEL_ARTIFACT_UNAVAILABLE",
+    "message": "Published model file is temporarily unavailable",
+    "retryable": true,
+    "retry_after_ms": 1000,
+    "details": {
+      "model_type": "embedding",
+      "release_id": "rel_11111111111141118111111111111111",
+      "file_id": "f_22222222222242228222222222222222"
+    }
+  }
+}
+```
