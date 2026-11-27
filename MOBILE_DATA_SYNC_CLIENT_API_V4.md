@@ -1,8 +1,10 @@
 # V4 客户端接口文档
 
-适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-26。
+适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-27。
 
-模型接口修订（2026-11-25确认，2026-11-26更新，仅设计未实现）：第16节规定 `chat`、`embedding` 模型查询、固定版本文件清单及并发Range下载/断点续传接口，支持iOS/Android。本次客户端embedding与服务端记忆模型独立，消息/记忆同步接口仍不携带模型协商字段，边界见第11节。
+账号已读与未读汇总修订（2026-11-27，设计已确认、待实现）：新增 `PUT /auto-media/api/chat/roles/{role_id}/read-position` 和只读的 `POST /auto-media/api/chat/threads/summary`。会话列表按有效本地位置、服务端当前Epoch已读位置、0的顺序选择计数基准，先计算本次未读数，再单调推进本页实际返回会话的服务端已读位置；新增 `server_read_through_object_seq` 区分保存后位置与计数前基准。本修订覆盖旧的“未读无状态、各设备已读互不恢复”接口约定，详见第3节；本次仅更新接口设计，尚未实现或上线。
+
+模型接口修订（2026-11-25确认，2026-11-26更新，代码已接入、尚未部署）：第16节规定 `chat`、`embedding` 模型查询、固定版本文件清单及并发Range下载/断点续传接口，支持iOS/Android。本次客户端embedding与服务端记忆模型独立，消息/记忆同步接口仍不携带模型协商字段，边界见第11节。
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
@@ -20,7 +22,9 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 
 | 方法与路径 | 用途 |
 |---|---|
-| POST /auto-media/api/chat/threads/query | 会话列表、当前亲密度等级、角色头像与昵称、最新消息预览及创建时间、本机阅读基准下的未读数 |
+| POST /auto-media/api/chat/threads/query | 会话列表、展示资料、最新消息及按选定基准计算的未读数；同时推进本页实际返回会话的服务端已读位置 |
+| PUT /auto-media/api/chat/roles/{role_id}/read-position | 上报当前messages Epoch的已读前缀，只前进并返回保存后位置 |
+| POST /auto-media/api/chat/threads/summary | 只读查询所有角色未读总数及是否存在任一有效消息，不推进已读 |
 | GET /auto-media/api/chat/roles/{role_id}/sync-state | 可选轻量探测，不是同步读取前置步骤 |
 | POST /auto-media/api/chat/roles/{role_id}/messages:batchCreate | 幂等创建用户/端侧消息，或校验并提交post候选回复；按独立版本回传人设和亲密度 |
 | POST /auto-media/api/chat/roles/{role_id}/messages:batchGet | 按消息 ID 批量查询当前会话的有效消息正文 |
@@ -31,7 +35,7 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks | 按未同步content检索并生成post候选；不直接写消息（client-commit-v3） |
 | GET /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id} | 查询生成状态、待上传候选或已经正式提交的消息 |
 | POST /auto-media/api/chat/roles/{role_id}/multimodal-tasks/{task_id}:cancel | 幂等取消业务生成任务 |
-| GET /auto-media/api/chat/models?platform={platform} | 查询指定平台当前发布的chat/embedding模型；第16节为待实现设计 |
+| GET /auto-media/api/chat/models?platform={platform} | 查询指定平台当前发布的chat/embedding模型，字段见第16节 |
 | GET /auto-media/api/chat/models/{model_type}/releases/{release_id} | 查询指定已发布版本的完整文件清单 |
 | GET /auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id} | 下载不可变版本文件，支持单区间Range及多个请求并行 |
 | HEAD /auto-media/api/chat/models/{model_type}/releases/{release_id}/files/{file_id} | 查询文件元信息，所有状态均无响应正文 |
@@ -61,7 +65,7 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | 字段 | 类型 | 必填条件 | 含义及来源规则 |
 |---|---|---|---|
 | `Authorization` | 字符串 | 所有接口必填 | 当前登录用户的访问令牌，使用`Bearer <access_token>`格式。上游网关校验令牌并覆盖注入可信身份；本业务服务使用可信X-User-ID/X-Caller-Service，不重复解析登录Token。请求正文不能指定另一个用户替代该身份。模型目录、清单和每个分片请求也经过登录鉴权。 |
-| `X-Device-ID` | `ID` | roles/*、threads/*接口必填；第16节models/*不强制 | 客户端安装实例标识，由客户端生成并稳定保存。用于设备与请求诊断，不是用户ID、消息幂等键或多设备已读合并依据。 |
+| `X-Device-ID` | `ID` | roles/*、threads/*接口必填；第16节models/*不强制 | 客户端安装实例标识，由客户端生成并稳定保存。用于定位本设备的会话列表分页视图及请求诊断，不是用户ID或消息幂等键；服务端已读位置按当前用户与角色共享，不以设备ID隔离。 |
 | `X-Request-ID` | `ID` | 所有接口必填 | 本次HTTP调用的追踪ID，由调用方生成；同一业务请求重试时可以使用新的追踪ID。业务去重仍依赖message_id、mutation_id或reply_message_id。服务端将此值原样返回为公共字段request_id，用于关联单次HTTP请求和响应。 |
 | `Content-Type` | 字符串 | 发送JSON请求正文时必填 | 固定为`application/json`。GET不发送请求正文。 |
 
@@ -79,7 +83,7 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | `release_id` | 非空字符串 | 模型版本及文件路径必填 | 服务端生成的`rel_`加32位小写hex；绑定一个不可变模型发布版本，不是version字符串或消息Epoch。 |
 | `file_id` | 非空字符串 | 模型文件路径必填 | 服务端生成的`f_`加32位小写hex，只在指定release中查找；不接受本地磁盘路径。 |
 
-`user_id`不作为客户端可指定的公共请求参数，始终由认证上下文获得。会话列表通过请求中各`local_read_positions[].role_id`标识阅读位置所属会话，规则与路径`role_id`一致。
+`user_id`不作为客户端可指定的公共请求参数，始终由认证上下文获得。会话列表和未读汇总通过请求中各`local_read_positions[].role_id`标识阅读位置所属会话，规则与路径`role_id`一致。
 
 ### 1.4 公共JSON响应字段
 
@@ -286,9 +290,9 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 消息/记忆同步接口的请求与响应均省略模型协商字段。`memories`读请求省略`expected_embedding_model_version`，同步成功和错误响应、内联数据、`sync-state`和`sync_hints`均省略`embedding_config`、模型版本和安装包标识。第16节独立模型分发接口返回自身的版本、文件与校验信息；该发布信息不改变Memory向量合同，也不代表客户端下载的Qwen embedding可查询服务端记忆向量，见第11节。
 
-## 3 会话列表查询：threads/query
+## 3 会话列表、已读位置与未读汇总
 
-`POST /auto-media/api/chat/threads/query`。第1节Header和公共JSON响应字段适用于本节及后续全部接口，不在每个表重复列出。`[]`表示数组中每一项的路径；引用一个共享结构时，该结构的每个内部字段见2。
+会话列表查询使用 `POST /auto-media/api/chat/threads/query`。第1节Header和公共JSON响应字段适用于本节及后续全部接口，不在每个表重复列出。本节2026-11-27新增及修订的账号已读规则为已确认设计，待实现；客户端须在目标环境实现并部署后切换。`[]`表示数组中每一项的路径；引用一个共享结构时，该结构的每个内部字段见2。
 
 请求字段：
 
@@ -296,10 +300,10 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 |---|---|---|---|
 | `page_size` | Count | 可省略，默认20；1～100 | 本页从固定会话集合中取出的ID片段大小，不是每个会话的消息条数。缺失数据过滤后不补齐，实际返回数可以更少。分页过程中保持不变。 |
 | `page_token` | PageToken | 首次省略或null；续页必填 | 服务端上一次返回的next_page_token，绑定本轮固定线程ID集合和顺序。已签发的标识或其绑定集合过期、被回收时返回410 PAGE_TOKEN_EXPIRED；格式错误、被篡改或与分页参数不匹配时返回400 INVALID_ARGUMENT。 |
-| `local_read_positions` | 对象数组 | 可省略，默认[] | 本设备各会话已读位置。可以携带多于本页的会话；同一role_id最多一项。没有对应项时按未知阅读状态处理。 |
+| `local_read_positions` | 对象数组 | 可省略，默认[]；不可为null | 本设备各会话已读位置。可以携带多于本页的会话；同一role_id最多一项。当前Epoch的有效本地位置优先，即使小于服务端位置；没有有效对应项时使用服务端当前Epoch的位置，再无则用0。 |
 | `local_read_positions[].role_id` | ID | 每项必填 | 本条阅读位置属于哪个网红会话，不是当前消息发送者。 |
-| `local_read_positions[].messages_sync_epoch` | OpaqueString或null | 每项必填；未知为null | 阅读位置所属的messages代次。与当前代次不同，服务端忽略旧阅读位置并返回reset_read_position=true。 |
-| `local_read_positions[].read_through_object_seq` | UInt64String | 每项必填；无状态为"0" | 用户已确认阅读的object_seq前缀，不是最大缓存消息、不等于sync_seq。当前Epoch下不得超过current_object_seq。 |
+| `local_read_positions[].messages_sync_epoch` | OpaqueString或null | 每项必填；未知为null | 阅读位置所属的messages代次。为null或与当前代次不同时忽略本地位置，改用服务端当前Epoch位置或0，并返回reset_read_position=true；有效当前Epoch本地位置则为false。 |
+| `local_read_positions[].read_through_object_seq` | UInt64String | 每项必填，允许"0" | 用户已确认阅读的object_seq前缀，不是最大缓存消息、不等于sync_seq。当前Epoch下不得超过current_object_seq。没有本机阅读状态时应省略该角色项或将其Epoch传null；当前Epoch下显式传"0"会按0计数，优先于服务端位置。 |
 
 响应字段：
 
@@ -315,13 +319,20 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 | `threads[].thread_revision` | UInt64String | 必填 | 当前服务端会话内容/预览版本。同messages Epoch内比较，不代表用户阅读进度，也不覆盖独立亲密度或外部角色展示资料的变化。 |
 | `threads[].messages_sync_epoch` | OpaqueString | 必填 | 本条会话及其消息序号所属代次，供缓存和本地阅读状态匹配。 |
 | `threads[].current_object_seq` | UInt64String | 必填 | 已分配过的最大消息创建序号。删除不回退，也不等于最新有效消息序号。 |
-| `threads[].unread_basis_object_seq` | UInt64String | 必填 | 服务端本次实际用于计数的请求阅读基准；无状态或旧Epoch时为"0"。 |
+| `threads[].unread_basis_object_seq` | UInt64String | 必填 | 推进服务端已读位置前，本次实际计数基准：有效本地位置优先，否则为服务端当前Epoch位置，两者皆无才为"0"。 |
+| `threads[].server_read_through_object_seq` | UInt64String | 必填 | 本次查询保存后的服务端已读前缀，按下述规则只前进；可能大于本次计数基准，不代表本设备已经阅读或同步到此位置。 |
 | `threads[].unread_count` | Count | 必填 | 当前有效网红消息中object_seq大于本次计数基准的条数。用户消息、墓碑不计入。 |
-| `threads[].reset_read_position` | boolean | 必填 | 是否需要按当前messages Epoch重建本机阅读位置；本轮请求Epoch缺失或不同则为true。 |
+| `threads[].reset_read_position` | boolean | 必填 | 是否缺少当前Epoch的有效本地位置。缺少该会话项、Epoch为null或不同则为true，应按回包Epoch和unread_basis_object_seq恢复；有效本地位置则为false。 |
 | `threads[].latest_message` | LatestMessage或null | 必填 | 最新有效消息的展示预览；全部消息已删或会话无有效消息时null。含created_at_ms的六个内部字段见2.7。不能据预览推进cursor或标读。 |
 | `threads[].sync_hints` | SyncHint数组 | 必填，可为[] | 对应会话各Scope的变化提示；结构字段见2。提示只用于安排读取任务。 |
 
-只有回包的messages Epoch、计数基准和本机当前阅读基准匹配时，才考虑采纳unread_count；还需过滤过时thread_revision。不能仅比较列表版本，因为相同内容版本可以因请求阅读位置不同而得到不同计数。
+每个实际返回的会话先选择计数基准，再计算当前有效网红消息中 `object_seq>计数基准` 的条数；只统计未删除、`sender_type="role"` 且 `sender_id=role_id` 的消息。服务端随后将该会话当前Epoch已读位置推进为 `max(原服务端已读位置, 本次计数基准, 本次计入未读的消息中最大的object_seq)`；本次没有未读时只取前两项的最大值。无原服务端位置按0处理，不能把未读条数或 `current_object_seq` 当作这个最大消息序号。计数响应保留推进前的 `unread_count` 和 `unread_basis_object_seq`，同时返回保存后的 `server_read_through_object_seq`。
+
+本接口查询会推进服务端已读位置；只更新本页实际返回的会话，携带在请求中但不属于本页、或因展示资料缺失而被过滤的会话不因此更新。客户端只需要总未读数或消息存在性时使用3.3的只读接口。重复请求使用相同的有效本地位置时，仍按该本地位置计数，不能因为服务端位置已经更大就改用它；重试与迟到请求不会使服务端已读位置回退。查询响应丢失、超时或收到503时，服务端位置可能已经推进；没有有效本地位置时，重试可能改用已推进的服务端基准并返回更小的未读数，不保证重复查询得到首次计数。
+
+客户端采纳响应时须隔离旧账号、旧分页轮次、旧Epoch、过时thread_revision及迟到请求。请求带有有效本地位置时，只有回包Epoch、计数基准仍与本机当前位置匹配，才采纳 `unread_count`；不能仅比较内容版本。请求发出时没有有效本地位置，且响应到达时仍无该Epoch的有效本地位置时，按回包 `messages_sync_epoch` 和计数前的 `unread_basis_object_seq` 初始化本机阅读基线，再采纳相应计数；若本机已产生更新位置，不用旧响应覆盖它。
+
+`server_read_through_object_seq` 仅说明服务端位置已经保存到哪里，不自动覆盖有效本地位置，也不证明本设备实际展示或同步完成。本机实际展示消息后再推进本地已读，并可通过3.2主动上报；缓存下载、列表预览和消息创建回包均不直接确认本机已读或推进同步cursor。新设备只能恢复服务端已经保存的基线，上线前从未上传或保存的历史阅读状态无法由接口补回。
 
 `intimacy_level`、`avatar_url`、`nickname` 按本次有效查询的结果刷新。它们可以在 `thread_revision` 不变时变化，客户端不能仅因版本相同就忽略这些展示字段；仍须隔离旧账号、旧分页轮次和迟到请求的响应。列表等级不带 `intimacy_score` 或版本，也不初始化或更新2.6/5.4的Session快照。
 
@@ -341,7 +352,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 }
 ```
 
-响应（HTTP 200）：
+假设原服务端已读位置为95，本机已读到98，99是用户消息、100是网红消息。本次以98计数得到1条未读，同时将服务端位置推进到100。响应（HTTP 200）：
 
 ```json
 {
@@ -359,6 +370,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
       "messages_sync_epoch": "msg-e1",
       "current_object_seq": "100",
       "unread_basis_object_seq": "98",
+      "server_read_through_object_seq": "100",
       "unread_count": 1,
       "reset_read_position": false,
       "latest_message": {
@@ -417,7 +429,111 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 }
 ```
 
-格式错误、被篡改或与分页参数不匹配的page_token返回HTTP 400 INVALID_ARGUMENT，客户端检查并修正分页参数。登录凭证过期按401 TOKEN_EXPIRED处理。
+格式错误、被篡改或与分页参数不匹配的page_token返回HTTP 400 INVALID_ARGUMENT，客户端检查并修正分页参数。登录凭证过期按401 TOKEN_EXPIRED处理。当前Epoch的本地已读位置超过该会话 `current_object_seq` 时，返回HTTP 400 INVALID_READ_POSITION；未提供该会话项，或该项Epoch为null或与当前不同时按第3节兜底，不因此返回409 SYNC_EPOCH_MISMATCH；已提供项内缺少任一必填字段仍返回400 INVALID_ARGUMENT。
+
+### 3.2 主动上报已读位置：read-position
+
+`PUT /auto-media/api/chat/roles/{role_id}/read-position`。携带第1节公共Header和role_id路径参数，正文不传user_id。用于用户实际阅读后主动上报，即使不再查询会话列表，也能保存供其他设备恢复的基线。
+
+请求字段：
+
+| 字段路径 | 类型 | 必填/默认值 | 含义与使用规则 |
+|---|---|---|---|
+| `messages_sync_epoch` | OpaqueString | 必填，不可为null | 本次已读位置所属的当前messages Epoch；不同于当前Epoch返回409 SYNC_EPOCH_MISMATCH。 |
+| `read_through_object_seq` | UInt64String | 必填 | 本机确认已读的消息创建序号前缀，允许0，不得超过当前 `current_object_seq`。不能使用sync_seq或未读条数代替。 |
+
+响应字段（HTTP 200；另含第1节公共字段）：
+
+| 字段路径 | 类型 | 出现条件 | 含义与使用规则 |
+|---|---|---|---|
+| `role_id` | ID | 必填 | 对应路径中的角色ID。 |
+| `messages_sync_epoch` | OpaqueString | 必填 | 本次保存位置所属的当前messages Epoch。 |
+| `read_through_object_seq` | UInt64String | 必填 | 保存后位置，等于同Epoch下原服务端位置与本次上报位置的最大值；可能大于本次请求值。 |
+
+当前Epoch内只前进：较小值或相同值不会回退位置，仍返回HTTP 200及保存后值；重复上报同一位置可以安全重试。接口只合入本次明确上报的前缀，不自动标记该位置之后的未读消息。不同Epoch的序号不能取最大值合并；位置超过当前 `current_object_seq` 返回HTTP 400 INVALID_READ_POSITION。
+
+请求示例：
+
+```http
+PUT /auto-media/api/chat/roles/role_1/read-position
+Authorization: Bearer <access_token>
+X-Device-ID: device_1
+X-Request-ID: req_read_position_1
+Content-Type: application/json
+
+{
+  "messages_sync_epoch": "msg-e1",
+  "read_through_object_seq": "98"
+}
+```
+
+若原服务端已读位置为100，仍返回100，响应为HTTP 200：
+
+```json
+{
+  "request_id": "req_read_position_1",
+  "server_time_ms": 1795744800000,
+  "role_id": "role_1",
+  "messages_sync_epoch": "msg-e1",
+  "read_through_object_seq": "100"
+}
+```
+
+客户端保留本机实际确认的已读位置，不因成功响应返回更大的服务端位置就覆盖有效本地基线，也不据此提交同步cursor。旧Epoch上报被拒绝后停止重试旧位置，重新取得当前Epoch及阅读基线；不能只替换Epoch沿用原序号。
+
+### 3.3 所有角色未读汇总：threads/summary
+
+`POST /auto-media/api/chat/threads/summary`。携带第1节公共Header；该接口只查询，不推进服务端或本机已读位置，不要求先查询或翻完会话列表。
+
+请求字段：
+
+| 字段路径 | 类型 | 必填/默认值 | 含义与使用规则 |
+|---|---|---|---|
+| `local_read_positions` | 对象数组 | 可省略，默认[] | 字段结构与第3节列表请求相同，每项必填 `role_id`、`messages_sync_epoch`、`read_through_object_seq`，同一role_id最多一项。每个会话独立按有效当前Epoch本地位置、服务端当前Epoch位置、0的顺序选择基准。 |
+
+允许请求正文为 `{}`，此时各会话使用服务端当前Epoch位置或0；显式传 `[]` 等价。有效当前Epoch本地位置即使小于服务端位置也优先；本地Epoch为null或不同则忽略该项的位置并使用当前Epoch兜底，当前Epoch的未来位置返回HTTP 400 INVALID_READ_POSITION。重复role_id、未知字段或数组格式非法返回HTTP 400 INVALID_ARGUMENT。本接口不接收 `page_size` 或 `page_token`。
+
+响应字段（HTTP 200；另含第1节公共字段）：
+
+| 字段路径 | 类型 | 出现条件 | 含义与使用规则 |
+|---|---|---|---|
+| `total_unread_count` | Count，即非负JSON整数 | 必填 | 当前用户所有角色按各自基准计算的有效网红未读消息条数之和；仅统计当前messages Epoch内未删除、`sender_type="role"`、`sender_id=role_id`、`object_seq>基准` 的消息。不是序号字符串。 |
+| `has_messages` | boolean | 必填 | 当前用户是否与任意角色存在当前messages Epoch内至少一条有效未删除消息；用户消息和网红消息均计入存在性判断。整个响应只有一个总boolean，不按角色返回。 |
+
+统计不分页，覆盖当前用户所有角色，不受会话列表的亲密度、头像、昵称等展示过滤影响，也不能通过累加列表已返回页计算。只有用户消息时 `has_messages=true`，而 `total_unread_count` 可以为0；从未有消息或所有消息均已删除时，返回0和false。历史Epoch的消息、删除墓碑和列表预览本身不构成有效消息。
+
+请求示例：
+
+```http
+POST /auto-media/api/chat/threads/summary
+Authorization: Bearer <access_token>
+X-Device-ID: device_1
+X-Request-ID: req_threads_summary_1
+Content-Type: application/json
+
+{
+  "local_read_positions": [
+    {
+      "role_id": "role_1",
+      "messages_sync_epoch": "msg-e1",
+      "read_through_object_seq": "98"
+    }
+  ]
+}
+```
+
+假设role_1按本地98计算有1条未读，其他角色按各自服务端位置或0计算共2条，响应为HTTP 200：
+
+```json
+{
+  "request_id": "req_threads_summary_1",
+  "server_time_ms": 1795744801000,
+  "total_unread_count": 3,
+  "has_messages": true
+}
+```
+
+总览响应不包含各会话的Epoch和计数基准，不能据总数恢复本地阅读位置。客户端将本次汇总响应绑定到请求发出时的账号和本地阅读位置快照；本地阅读状态已变化或有更新请求时丢弃迟到总数，再按当前状态重新请求，查询不会消耗未读。列表查询或主动上报已经推进服务端位置后，不带有效本地位置的后续汇总按新服务端位置计算；仍带有效旧本地位置时继续按该本地位置计算，不强制与服务端基准结果相同。
 
 ## 4 Scope位置查询：sync-state
 
@@ -1647,8 +1763,8 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 |---|---|---|
 | `role_id` | ID，可选 | 出错会话，不能扩大当前用户权限。 |
 | `scope` | Scope，可选；413建议返回 | 出错数据类别。 |
-| `requested_sync_epoch` | OpaqueString或null，可选 | 原请求Epoch；不能静默替换冻结业务写操作的来源Epoch。 |
-| `current_sync_epoch` | OpaqueString，可选 | 当前服务端Epoch，供重新建基线。 |
+| `requested_sync_epoch` | OpaqueString或null，可选 | 原请求Epoch，包括read-position上报中的messages_sync_epoch；不能静默替换冻结业务写操作或旧代已读位置的来源Epoch。 |
+| `current_sync_epoch` | OpaqueString，可选 | 当前服务端Epoch，供重新建基线；不能只替换Epoch沿用旧代已读序号。 |
 | `cursor` | UInt64String，可选 | 被拒绝的原C或本轮接续H；结合模式解释，不直接推进本机位置。 |
 | `min_valid_cursor` | UInt64String，可选 | 仍能保证墓碑接续的最低位置，低于它需重建。 |
 | `server_max_sync_seq` | UInt64String，可选 | 服务端观察的当前已提交位置，仅提示。 |
@@ -1664,7 +1780,7 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 | `logical_collection` / `stage` | string，已标记写入阶段时可选 | 本地白名单逻辑集合与操作阶段，例如reply_provenance_state / update_post_provenance；不包含物理连接信息、消息正文或原始Mongo异常。 |
 | `operation_outcome` | string，提交结果未知时可选 | unknown表示原事务提交未能确认；继续用原message_id和原冻结负载恢复，不重新生成。未出现本字段也不证明消息一定未提交。 |
 | `action` | string，可选 | 既有同步恢复提示，如retry_smaller_range、rebuild_recent、rebuild_full；只用于既有同步规则，不增加多模态响应动作枚举。 |
-| `read_through_object_seq` | UInt64String，可选 | 非法阅读位置请求值。 |
+| `read_through_object_seq` | UInt64String，可选 | read-position上报或threads/query、threads/summary中被拒绝的当前Epoch本地阅读位置请求值。 |
 | `current_object_seq` | UInt64String，可选 | 阅读位置校验时messages的创建高水位。 |
 | `lower_exclusive` | UInt64String，413必填，其他可选 | 被拒绝区间的原下界。 |
 | `upper_inclusive` | UInt64String，413必填，其他可选 | 被拒绝区间的原上界，不能借建议改变原覆盖任务。 |
@@ -1742,14 +1858,14 @@ error.code/message/retryable/retry_after_ms及可选details沿用1。下表只�
 
 | HTTP / code | 客户端动作 | 说明 |
 |---|---|---|
-| 400 [INVALID_ARGUMENT](#e14-invalid_argument) / [INVALID_READ_POSITION](#e15-invalid_read_position) | 修正原调用 | 多模态包括content硬限、旧新合同混用和非法上下文；普通同步包括page_token、未来游标及非法区间。 |
+| 400 [INVALID_ARGUMENT](#e14-invalid_argument) / [INVALID_READ_POSITION](#e15-invalid_read_position) | 修正原调用 | 多模态包括content硬限、旧新合同混用和非法上下文；普通同步包括page_token、未来游标及非法区间；read-position及threads/query、threads/summary的当前Epoch已读序号超过current_object_seq也返回INVALID_READ_POSITION。 |
 | 401 [TOKEN_EXPIRED](#e16-token_expired) / [UNAUTHENTICATED](#e17-unauthenticated) | 修正身份后恢复原操作 | 保留冻结生成请求、候选Outbox与本地同步进度，不推断此前请求或上传未提交。 |
 | 403 [FORBIDDEN](#e18-forbidden) / [UNTRUSTED_UPSTREAM](#e19-untrusted_upstream) | 停止当前调用，恢复权限/入口后查证 | 清除已撤销权限的会话快照，保留尚需恢复的原操作。 |
 | 404 [ROLE_NOT_FOUND](#e20-role_not_found) / [NOT_FOUND](#e21-not_found) | 检查目标与归属 | 不将普通404当作生成或上传未提交的证明。 |
 | 404 [MULTIMODAL_TASK_NOT_FOUND](#e08-multimodal_task_not_found) | 核对身份并通过原创建POST恢复 | 查询或batchCreate中当前user/role下无此task；保持原reply ID和content，不重建本轮。 |
 | 409 [IDEMPOTENCY_CONFLICT](#e22-idempotency_conflict) | 停止冲突负载，恢复原值 | 同业务ID改变冻结参数；候选上下文、时间及正文也参与幂等。 |
 | 409 [BASE_SYNC_SEQ_CONFLICT](#e23-base_sync_seq_conflict) / [OBJECT_DELETED](#e24-object_deleted) | 同步并由业务处理 | 保留草稿/原操作；已成功消息创建回执优先回放，不复活已删消息。 |
-| 409 [SYNC_EPOCH_MISMATCH](#e25-sync_epoch_mismatch) | 停止旧同步责任，重新建立基线 | v3生成请求不传Epoch；候选首次上传另校验任务内部目标Epoch，失效用RESULT_INVALID。 |
+| 409 [SYNC_EPOCH_MISMATCH](#e25-sync_epoch_mismatch) | 停止旧同步或旧代已读上报，重新建立基线 | read-position的messages_sync_epoch不同于当前Epoch时也返回；threads/query、threads/summary的旧或null本地Epoch按当前Epoch兜底，不因此返回409。v3生成请求不传Epoch；候选首次上传另校验任务内部目标Epoch，失效用RESULT_INVALID。 |
 | 409 [SYNC_CURSOR_EXPIRED](#e26-sync_cursor_expired) | 重开recent或full读取 | 不直接修改游标绕过墓碑边界。 |
 | 409 [DELETE_REQUIRES_MAINTENANCE](#e27-delete_requires_maintenance) | 停止自动重试，交维护 | 删除整笔未执行，不能当部分成功。 |
 | 410 [PAGE_TOKEN_EXPIRED](#e28-page_token_expired) | page_token置null重开首页 | 保留有效消息cursor/阅读位置。 |
@@ -2403,6 +2519,43 @@ Content-Type: application/json
 
 客户端动作：检查本地 Scope、Epoch 和游标来源；恢复正确的已提交位置，不把服务端提示位置直接当作本地已完成游标。
 
+新增已读接口适用例（2026-11-27设计，待实现）：当前messages Epoch为msg-e1，`current_object_seq="100"`，主动上报未来已读位置101：
+
+```http
+PUT /auto-media/api/chat/roles/role_1/read-position
+Authorization: Bearer <access_token>
+X-Device-ID: device_1
+X-Request-ID: req_e15_read_position
+Content-Type: application/json
+
+{
+  "messages_sync_epoch": "msg-e1",
+  "read_through_object_seq": "101"
+}
+```
+
+响应：`HTTP 400`。
+
+```json
+{
+  "request_id": "req_e15_read_position",
+  "server_time_ms": 1795744802000,
+  "error": {
+    "code": "INVALID_READ_POSITION",
+    "message": "已读位置超过当前消息创建序号",
+    "retryable": false,
+    "retry_after_ms": 0,
+    "details": {
+      "role_id": "role_1",
+      "read_through_object_seq": "101",
+      "current_object_seq": "100"
+    }
+  }
+}
+```
+
+客户端动作：修正已读位置来源，只上报本机在当前Epoch实际确认的前缀；不能把sync_seq或未读数当作object_seq。threads/query、threads/summary提交当前Epoch本地位置101时同样返回本错误；旧或null本地Epoch按各接口兜底规则处理。
+
 ### E16 TOKEN_EXPIRED
 
 既有网关鉴权透传的可选兼容示例：登录令牌已过期。该错误由网关签发，不表示聊天服务自身解析或刷新 Token。
@@ -2766,6 +2919,44 @@ Content-Type: application/json
 ```
 
 客户端动作：停止并废弃旧 Epoch 的读取责任与迟到响应，清理对应缓存后重新建立基线；不要只替换 Epoch 并继续旧游标。
+
+新增已读接口适用例（2026-11-27设计，待实现）：当前messages Epoch为msg-e1，主动上报仍携带msg-e0：
+
+```http
+PUT /auto-media/api/chat/roles/role_1/read-position
+Authorization: Bearer <access_token>
+X-Device-ID: device_1
+X-Request-ID: req_e25_read_position
+Content-Type: application/json
+
+{
+  "messages_sync_epoch": "msg-e0",
+  "read_through_object_seq": "98"
+}
+```
+
+响应：`HTTP 409`。
+
+```json
+{
+  "request_id": "req_e25_read_position",
+  "server_time_ms": 1795744803000,
+  "error": {
+    "code": "SYNC_EPOCH_MISMATCH",
+    "message": "已读位置所属messages Epoch已变化",
+    "retryable": false,
+    "retry_after_ms": 0,
+    "details": {
+      "role_id": "role_1",
+      "scope": "messages",
+      "requested_sync_epoch": "msg-e0",
+      "current_sync_epoch": "msg-e1"
+    }
+  }
+}
+```
+
+客户端动作：停止上报旧代位置，取得当前messages Epoch并重建阅读基线；不能只改为msg-e1继续上报98。此例不适用于threads/query、threads/summary的本地位置：这两个查询接口忽略旧或null本地Epoch，使用当前Epoch服务端位置或0，列表另返回reset_read_position=true。
 
 ### E26 SYNC_CURSOR_EXPIRED
 
@@ -3241,7 +3432,7 @@ Content-Type: application/json
 
 ## 16 客户端模型发布与下载
 
-本节为模型查询、文件清单与下载接口合同，更新于2026-11-26，尚未实现。
+本节为模型查询、文件清单与下载接口合同，更新于2026-11-26；代码已接入，目标部署启用后可联调。
 
 ### 16.1 接口概览与公共约定
 
