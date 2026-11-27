@@ -2,9 +2,9 @@
 
 适用于移动端接入。通用同步协议见[移动端数据同步接口设计 V4](MOBILE_DATA_SYNC_DESIGN_V4.md)。长期记忆采用[长期记忆设计](CHAT_MEMORY_DESIGN_FINAL.md)定义的 `memories` Scope。网红人设采用[网红资料同步设计](ROLE_PROFILE_SYNC_DESIGN.md)，通过消息创建回包交付。更新于 2026-11-27。
 
-账号已读与未读汇总修订（2026-11-27，设计已确认、待实现）：新增 `PUT /auto-media/api/chat/roles/{role_id}/read-position` 和只读的 `POST /auto-media/api/chat/threads/summary`。会话列表按有效本地位置、服务端当前Epoch已读位置、0的顺序选择计数基准，先计算本次未读数，再单调推进本页实际返回会话的服务端已读位置；新增 `server_read_through_object_seq` 区分保存后位置与计数前基准。本修订覆盖旧的“未读无状态、各设备已读互不恢复”接口约定，详见第3节；本次仅更新接口设计，尚未实现或上线。
+账号已读与未读汇总修订（2026-11-27，代码已接入、已部署）：新增 `PUT /auto-media/api/chat/roles/{role_id}/read-position` 和只读的 `POST /auto-media/api/chat/threads/summary`。会话列表按有效本地位置、服务端当前Epoch已读位置、0的顺序选择计数基准，先计算本次未读数，再单调推进本页实际返回会话的服务端已读位置；新增 `server_read_through_object_seq` 区分保存后位置与计数前基准。本修订覆盖旧的“未读无状态、各设备已读互不恢复”接口约定，详见第3节；接口代码及离线测试已接入，目标环境部署后方可调用新合同。
 
-模型接口修订（2026-11-25确认，2026-11-26更新，代码已接入、尚未部署）：第16节规定 `chat`、`embedding` 模型查询、固定版本文件清单及并发Range下载/断点续传接口，支持iOS/Android。本次客户端embedding与服务端记忆模型独立，消息/记忆同步接口仍不携带模型协商字段，边界见第11节。
+模型接口修订（2026-11-25确认，2026-11-26更新，代码已接入、已部署）：第16节规定 `chat`、`embedding` 模型查询、固定版本文件清单及并发Range下载/断点续传接口，支持iOS/Android。本次客户端embedding与服务端记忆模型独立，消息/记忆同步接口仍不携带模型协商字段，边界见第11节。
 
 亲密度与主动消息修订（2026-11-17）：亲密度快照统一为 `intimacy_score: {version, data: {level}}`，仅通过 `messages:batchCreate` 按独立版本回传；本次不增加亲密度读取接口，不扩展 `sync-state`，也不允许空消息批次。亲密度升级主动消息使用正式 `MessageContent.proactive_context` 交付触发信息，详见 2.2.1、5.4 和 5.5；服务端来源、监测、生成及重试规则以[聊天服务端完整设计](SERVER_DESIGN_FINAL.md)的亲密度模块为准。本修订覆盖其他同步专题文档中的旧 `score` 字段和亲密度 Epoch 特例。
 
@@ -65,9 +65,11 @@ post链接客户端确认写入修订（2026-11-24，用户确认，代码已接
 | 字段 | 类型 | 必填条件 | 含义及来源规则 |
 |---|---|---|---|
 | `Authorization` | 字符串 | 所有接口必填 | 当前登录用户的访问令牌，使用`Bearer <access_token>`格式。上游网关校验令牌并覆盖注入可信身份；本业务服务使用可信X-User-ID/X-Caller-Service，不重复解析登录Token。请求正文不能指定另一个用户替代该身份。模型目录、清单和每个分片请求也经过登录鉴权。 |
-| `X-Device-ID` | `ID` | roles/*、threads/*接口必填；第16节models/*不强制 | 客户端安装实例标识，由客户端生成并稳定保存。用于定位本设备的会话列表分页视图及请求诊断，不是用户ID或消息幂等键；服务端已读位置按当前用户与角色共享，不以设备ID隔离。 |
+| `X-Device-ID` | `ID` | 所有接口必填 | 客户端安装实例标识，由客户端生成并稳定保存。用于定位本设备的会话列表分页视图及请求诊断，不是用户ID或消息幂等键；服务端已读位置按当前用户与角色共享，不以设备ID隔离。 |
 | `X-Request-ID` | `ID` | 所有接口必填 | 本次HTTP调用的追踪ID，由调用方生成；同一业务请求重试时可以使用新的追踪ID。业务去重仍依赖message_id、mutation_id或reply_message_id。服务端将此值原样返回为公共字段request_id，用于关联单次HTTP请求和响应。 |
 | `Content-Type` | 字符串 | 发送JSON请求正文时必填 | 固定为`application/json`。GET不发送请求正文。 |
+
+所有接口的每次请求都必须且仅携带一个合法的`X-Device-ID`，包括GET、HEAD、并发下载及每个Range/重试请求；缺失、重复、空值或不符合`ID`约束的值均返回HTTP 400 `INVALID_ARGUMENT`。设备ID由同一安装实例稳定复用，不随请求、分片或重试重新生成。
 
 ### 1.3 公共路径参数
 
@@ -292,7 +294,7 @@ RecordsPayload是records:query响应剔除request_id和server_time_ms后的记�
 
 ## 3 会话列表、已读位置与未读汇总
 
-会话列表查询使用 `POST /auto-media/api/chat/threads/query`。第1节Header和公共JSON响应字段适用于本节及后续全部接口，不在每个表重复列出。本节2026-11-27新增及修订的账号已读规则为已确认设计，待实现；客户端须在目标环境实现并部署后切换。`[]`表示数组中每一项的路径；引用一个共享结构时，该结构的每个内部字段见2。
+会话列表查询使用 `POST /auto-media/api/chat/threads/query`。第1节Header和公共JSON响应字段适用于本节及后续全部接口，不在每个表重复列出。本节2026-11-27新增及修订的账号已读规则已接入代码；客户端须在目标环境完成部署后切换。`[]`表示数组中每一项的路径；引用一个共享结构时，该结构的每个内部字段见2。
 
 请求字段：
 
@@ -2519,7 +2521,7 @@ Content-Type: application/json
 
 客户端动作：检查本地 Scope、Epoch 和游标来源；恢复正确的已提交位置，不把服务端提示位置直接当作本地已完成游标。
 
-新增已读接口适用例（2026-11-27设计，待实现）：当前messages Epoch为msg-e1，`current_object_seq="100"`，主动上报未来已读位置101：
+新增已读接口适用例（2026-11-27接口合同，代码已接入）：当前messages Epoch为msg-e1，`current_object_seq="100"`，主动上报未来已读位置101：
 
 ```http
 PUT /auto-media/api/chat/roles/role_1/read-position
@@ -2920,7 +2922,7 @@ Content-Type: application/json
 
 客户端动作：停止并废弃旧 Epoch 的读取责任与迟到响应，清理对应缓存后重新建立基线；不要只替换 Epoch 并继续旧游标。
 
-新增已读接口适用例（2026-11-27设计，待实现）：当前messages Epoch为msg-e1，主动上报仍携带msg-e0：
+新增已读接口适用例（2026-11-27接口合同，代码已接入）：当前messages Epoch为msg-e1，主动上报仍携带msg-e0：
 
 ```http
 PUT /auto-media/api/chat/roles/role_1/read-position
@@ -3438,7 +3440,7 @@ Content-Type: application/json
 
 `chat`与`embedding`独立查询当前版本，所有用户在同一平台获得相同结果。`platform`只接受`ios`、`android`；同一清单的`platforms`可以同时包含两端。当前版本以目录接口为准，使用返回的`release_id`与本地已安装版本的`release_id`判等检测更新，详见16.2.1；`version`只展示及判等，不按字符串、数字或语义版本推断更新顺序。
 
-全部请求携带当前用户的`Authorization: Bearer <access_token>`和`X-Request-ID`，`models/*`不强制`X-Device-ID`，不需要`role_id`。每个并发文件GET/HEAD都需要同样的登录鉴权。
+全部请求携带当前用户的`Authorization: Bearer <access_token>`、`X-Device-ID`和`X-Request-ID`，不需要`role_id`。模型目录、固定版本清单、文件GET/HEAD以及每个并发、Range、断点续传和重试请求均必填`X-Device-ID`，同一安装实例沿用稳定设备ID；每次请求都需要同样的登录鉴权。
 
 固定版本清单及文件URL绑定不可变`release_id`，相同URL的字节、路径和校验值不变。目录出现新版后，仍可通过原URL读取尚未删除的旧版，不重定向到新版。已删除或清理中的旧版本返回410，原身份不复用。清理期间，先前成功的HEAD不保证后续GET仍成功，在途传输也可能收到原生404或连接异常；旧URL不会改为返回新版字节。
 
@@ -3465,6 +3467,7 @@ Content-Type: application/json
 ```http
 GET /auto-media/api/chat/models?platform=ios
 Authorization: Bearer <access_token>
+X-Device-ID: device_1
 X-Request-ID: req_models_1
 ```
 
@@ -3594,7 +3597,7 @@ X-Request-ID: req_models_1
 
 | 请求Header | 是否必填 | 规则 |
 |---|---|---|
-| Authorization、X-Request-ID | 是 | 每个并发请求都携带；规则见1.2。 |
+| Authorization、X-Device-ID、X-Request-ID | 是 | 每个GET/HEAD、并发Range及重试请求都携带；规则见1.2。 |
 | Range | 否 | GET支持一个连续`bytes`区间，例如`bytes=0-33554431`、`bytes=33554432-`或`bytes=-1024`；拒绝多区间、重复Range头和非法语法，返回400 INVALID_ARGUMENT。没有Range则取完整文件。 |
 | If-Range | 否 | 与GET Range一起使用；建议使用此前同一固定文件返回的强ETag。也支持满足标准比较规则的Last-Modified日期。条件不满足、弱ETag或不能匹配时忽略Range，发送完整200。HEAD忽略Range和If-Range。 |
 | If-None-Match、If-Modified-Since | 否 | 文件GET/HEAD遵循标准条件请求；条件满足时可返回304，不发送文件正文。普通前置条件先于Range处理，不将304解释为某个分片已下载。目录/清单JSON入口不使用这些条件头。 |
@@ -3620,6 +3623,7 @@ X-Request-ID: req_models_1
 ```http
 GET /auto-media/api/chat/models/embedding/releases/rel_11111111111141118111111111111111/files/f_22222222222242228222222222222222
 Authorization: Bearer <access_token>
+X-Device-ID: device_1
 X-Request-ID: req_range_1
 Range: bytes=0-1
 If-Range: "fixture-etag-1"
@@ -3643,7 +3647,7 @@ ab
 
 | HTTP / error.code | retryable | 适用条件与处理 |
 |---|---|---|
-| 400 INVALID_ARGUMENT | false | platform缺失/非法/重复、未知query参数、非法model_type或ID格式、GET/HEAD携带正文、Range语法非法/多区间/重复头。修正请求，不用错误参数重试。 |
+| 400 INVALID_ARGUMENT | false | X-Device-ID缺失/重复/非法、platform缺失/非法/重复、未知query参数、非法model_type或ID格式、GET/HEAD携带正文、Range语法非法/多区间/重复头。修正请求，不用错误参数重试。 |
 | 401/403 公共身份/入口错误 | 按公共合同 | 模型文件也需要有效登录身份，不能改用内部静态路径绕过。HEAD没有JSON正文。 |
 | 404 MODEL_RELEASE_NOT_FOUND | false | 版本未曾发布、尚未发布，或指定release下不存在file_id；合法但不匹配的model_type/release也视为未找到。重新核对目录和固定清单。 |
 | 410 MODEL_RELEASE_GONE | false | 指定旧版本已删除或清理中。重新查询当前目录，不把新版区间拼到旧版文件。 |
@@ -3656,7 +3660,7 @@ ab
 
 业务API在发文件前拒绝GET时返回公共JSON Error；文件传输开始后的错误或连接中断不保证有JSON错误响应。固定版本清理期间，即使先前HEAD成功，后续GET仍可能失败。
 
-以下三份响应均为协议示例，并非真实模型已发布或已清理的记录。请求分别为指定fixture版本的清单GET，及其文件GET；都携带合法公共身份与对应X-Request-ID。文件请求未发送Range。
+以下三份响应均为协议示例，并非真实模型已发布或已清理的记录。请求分别为指定fixture版本的清单GET，及其文件GET；都携带合法公共身份、X-Device-ID: device_1与对应X-Request-ID。文件请求未发送Range。
 
 版本尚未发布，清单GET返回HTTP404：
 
